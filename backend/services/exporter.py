@@ -683,8 +683,14 @@ def export_playlist(
             progress = 10 + (i / len(segments)) * 70  # 10% to 80%
             update_progress("downloading", progress, f"Downloading segment {i+1}/{len(segments)}...", i)
             
-            # Download video
-            video_path = download_video(segment.youtube_id, download_dir, video_quality)
+            # Use source_path if available (from auto_playlist), otherwise download
+            if hasattr(segment, 'source_path') and segment.source_path and Path(segment.source_path).exists():
+                video_path = Path(segment.source_path)
+                logger.info(f"Using local video: {video_path}")
+            else:
+                # Download video
+                video_path = download_video(segment.youtube_id, download_dir, video_quality)
+            
             if not video_path:
                 logger.warning(f"Skipping segment {i}: download failed")
                 continue
@@ -756,20 +762,32 @@ def export_playlist(
             logger.info("="*50)
             
             try:
-                # Build segment info for DJ
-                segment_info = [
-                    {
+                # Build segment info for DJ with actual timing in the final video
+                # Calculate cumulative start times accounting for intro (4s) and transitions (1.5s each)
+                intro_duration = 4.0
+                transition_duration = crossfade_duration  # 1.5s typically
+                
+                segment_info = []
+                cumulative_time = intro_duration  # Start after intro
+                
+                for i, s in enumerate(segments):
+                    seg_duration = s.end_time - s.start_time  # Actual duration of this segment
+                    
+                    segment_info.append({
                         "song_title": s.song_title,
                         "title": s.song_title,
                         "artist": s.artist,
                         "language": s.language,
-                        "start_time": s.start_time,
+                        "start_time": s.start_time,  # Original source time
+                        "video_start_time": cumulative_time,  # When this song starts in the final video
+                        "segment_duration": seg_duration,  # How long this segment plays
                         "energy_score": 0.7,  # Default energy
                         "bpm": getattr(s, 'bpm', 120),
                         "position": i
-                    }
-                    for i, s in enumerate(segments)
-                ]
+                    })
+                    
+                    # Next segment starts after this one, minus transition overlap
+                    cumulative_time += seg_duration - (transition_duration if i < len(segments) - 1 else 0)
                 
                 print(f"[DJ] Segment count: {len(segment_info)}")
                 logger.info(f"Segment info: {segment_info}")
@@ -803,13 +821,19 @@ def export_playlist(
                         print(f"[DJ] Azure OpenAI available: {AZURE_OPENAI_AVAILABLE}")
                         logger.info(f"Azure OpenAI available: {AZURE_OPENAI_AVAILABLE}")
                         
-                        # Build DJContext from dict
+                        # Build DJContext from dict - support both old and new formats
+                        # New format from auto_playlist uses 'notes' and 'original_prompt'
+                        mood_val = dj_context.get("mood", "energetic, celebratory, festive")
+                        if isinstance(mood_val, list):
+                            mood_val = ", ".join(mood_val)
+                        
                         context_obj = DJContext(
                             theme=dj_context.get("theme", "New Year 2025 Party - Welcoming 2026!"),
-                            mood=dj_context.get("mood", "energetic, celebratory, festive"),
+                            mood=mood_val,
                             audience=dj_context.get("audience", "party guests ready to dance"),
-                            special_notes=dj_context.get("special_notes", ""),
-                            custom_shoutouts=dj_context.get("custom_shoutouts", [])
+                            special_notes=dj_context.get("special_notes") or dj_context.get("notes", ""),
+                            custom_shoutouts=dj_context.get("custom_shoutouts", []),
+                            original_prompt=dj_context.get("original_prompt", "")
                         )
                         
                         print(f"[DJ] Theme: {context_obj.theme}")

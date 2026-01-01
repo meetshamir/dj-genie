@@ -77,10 +77,17 @@ LANGUAGE_INFO = {
 class DJContext:
     """User-provided context for DJ commentary."""
     theme: str = "New Year 2025 Party - Welcoming 2026!"
-    mood: str = "energetic, celebratory, festive"
+    mood: str = "energetic, celebratory, festive"  # Can be string or list
     audience: str = "party guests ready to dance"
     special_notes: str = ""
     custom_shoutouts: List[str] = field(default_factory=list)
+    original_prompt: str = ""  # The original user prompt for reference
+    
+    def get_mood_str(self) -> str:
+        """Get mood as a string, handling both string and list inputs."""
+        if isinstance(self.mood, list):
+            return ", ".join(self.mood)
+        return self.mood
 
 
 @dataclass
@@ -205,7 +212,7 @@ def generate_creative_commentary_with_gpt(
         log("[AZURE_DJ] GPT not available, using fallback commentary")
         return generate_fallback_commentary(segments, context)
     
-    # Build song list description
+    # Build song list description - human-friendly, no technical details
     songs_desc = []
     for i, seg in enumerate(segments):
         meta = extract_song_metadata(seg)
@@ -214,9 +221,7 @@ def generate_creative_commentary_with_gpt(
         song_line = f"{i+1}. \"{meta.title}\" ({meta.language.title()}"
         if meta.artist:
             song_line += f", by {meta.artist}"
-        if meta.bpm:
-            song_line += f", {int(meta.bpm)} BPM"
-        song_line += f", energy: {int(meta.energy_score * 100)}%"
+        # Skip BPM - keep it human-like, not technical
         if meta.famous_actors:
             song_line += f", featuring: {', '.join(meta.famous_actors)}"
         song_line += ")"
@@ -226,44 +231,59 @@ def generate_creative_commentary_with_gpt(
     
     # Determine number of comments based on frequency
     comment_counts = {
-        "minimal": 3,      # intro, mid, outro
-        "moderate": 5,     # intro, 2 middle, language switch, outro
-        "frequent": 7,     # More comments
-        "maximum": 10      # Many comments
+        "minimal": 2,      # intro, outro only
+        "moderate": 4,     # intro, 1-2 transitions, outro
+        "frequent": 5,     # intro, transitions, outro
+        "maximum": 7       # More comments
     }
-    num_comments = comment_counts.get(frequency, 5)
+    num_comments = comment_counts.get(frequency, 4)
     
     # Build the prompt
+    mood_str = context.get_mood_str() if hasattr(context, 'get_mood_str') else context.mood
+    
     prompt = f"""You are an energetic AI DJ at a party! Generate {num_comments} DJ voice-over comments for a video DJ mix.
 
 PARTY THEME: {context.theme}
-MOOD: {context.mood}
+MOOD: {mood_str}
 AUDIENCE: {context.audience}
 {f"SPECIAL NOTES: {context.special_notes}" if context.special_notes else ""}
+{f"ORIGINAL REQUEST: {context.original_prompt}" if context.original_prompt else ""}
 {f"SHOUTOUTS TO INCLUDE: {', '.join(context.custom_shoutouts)}" if context.custom_shoutouts else ""}
 
-PLAYLIST ({len(segments)} songs):
+PLAYLIST ORDER ({len(segments)} songs - this is the exact order they will play):
 {songs_list}
+
+CRITICAL RULES:
+1. **segment_index MUST match the song you're talking about!**
+   - segment_index 0 = Song 1 (intro plays during/before song 1)
+   - segment_index 1 = Song 2 
+   - segment_index 2 = Song 3, etc.
+2. When you say "song_intro" for segment_index N, you MUST reference song N+1's title/artist
+3. When you say "transition" to segment_index N, you're transitioning TO song N+1
+4. "hype" or "peak_energy" for segment_index N should hype the CURRENT song N+1
+5. **NEVER mention a song in the wrong position** - check the playlist order above!
 
 INSTRUCTIONS:
 1. Create exactly {num_comments} DJ comments as JSON array
-2. Be creative, hype, and reference the party theme (New Year 2026!)
-3. When songs are from Bollywood/Indian cinema, reference famous actors/movies
-4. Use phrases like "groove like SRK", "Bollywood swag", "Kerala vibes", etc.
-5. Include language-specific shoutouts (Hindi: "Arey waah!", Tamil: "Thalaivar style!", etc.)
-6. Reference BPM changes and energy levels when transitioning
-7. Keep each comment SHORT (1-2 sentences, under 15 seconds to speak)
-8. For New Year theme: countdown references, "2026 here we come!", "last party of 2025!"
+2. Be creative but BRIEF - real DJs don't ramble!
+3. Reference the party theme naturally
+4. For Bollywood, quick nods like "SRK vibes!" or "Kollywood heat!"
+5. Quick language shoutouts: "Arey!", "Let's go!", "Thalaivar!"
+6. Be NATURAL - don't over-explain or list song details
+7. **KEEP IT SHORT: 5-12 words MAX per comment (3-5 seconds to speak)**
+8. Punchy energy, not long speeches!
 
-OUTPUT FORMAT (JSON array):
+OUTPUT FORMAT (JSON array) - segment_index 0 = first song, 1 = second song, etc:
 [
-  {{"type": "intro", "text": "Your intro comment", "segment_index": 0}},
-  {{"type": "transition", "text": "Transition comment", "segment_index": 1}},
+  {{"type": "intro", "text": "Welcome/theme intro", "segment_index": 0}},
+  {{"type": "song_intro", "text": "Intro for song 1", "segment_index": 0}},
+  {{"type": "transition", "text": "Transition to song 2", "segment_index": 1}},
+  {{"type": "song_intro", "text": "Intro for song 2", "segment_index": 1}},
   ...
   {{"type": "outro", "text": "Closing comment", "segment_index": {len(segments)-1}}}
 ]
 
-Types: intro, hype, transition, language_switch, song_intro, peak_energy, outro
+Types: intro (party opener), song_intro (introduce specific song), transition (bridge to next song), hype (energy boost), peak_energy (climax moment), outro (closing)
 
 Generate the JSON array now:"""
 
@@ -593,23 +613,83 @@ def add_creative_dj_commentary_to_video(
             log("[AZURE_DJ] No comments generated!")
             return False, timeline
         
-        # Calculate timing for each comment
+        # Build segment timing map - use actual video_start_time if available
+        # This tells us exactly when each song starts in the final video
         num_segments = len(segments)
-        segment_duration = video_duration / num_segments if num_segments > 0 else video_duration
+        segment_timings = []  # (start_time_in_video, duration, song_title)
+        
+        for i, seg in enumerate(segments):
+            if 'video_start_time' in seg:
+                # Use actual timing from exporter
+                start = seg['video_start_time']
+                duration = seg.get('segment_duration', 60)
+            else:
+                # Fallback: estimate based on position (4s intro + segments)
+                avg_seg_duration = (video_duration - 4 - 3) / num_segments if num_segments > 0 else 60
+                start = 4.0 + (i * avg_seg_duration)
+                duration = avg_seg_duration
+            
+            segment_timings.append({
+                'start': start,
+                'duration': duration,
+                'title': seg.get('song_title', seg.get('title', 'Unknown')),
+                'artist': seg.get('artist', '')
+            })
+        
+        log(f"[AZURE_DJ] Segment timings in final video:")
+        for i, st in enumerate(segment_timings):
+            log(f"[AZURE_DJ]   Song {i+1}: {st['title'][:30]} @ {st['start']:.1f}s ({st['duration']:.0f}s)")
         
         dj_clips = []
+        # Track last end time to prevent overlaps
+        last_clip_end_time = 0.0
+        
         for i, comment in enumerate(comments):
             clip_path = temp_dir / f"dj_{i}.wav"
+            seg_idx = min(comment.segment_index, num_segments - 1)
             
-            # Calculate start time based on comment type and segment index
+            # Calculate start time based on comment type using actual segment timings
             if comment.comment_type == "intro":
-                start_time = 2.0  # 2 seconds in
+                start_time = 1.5  # Intro starts 1.5 seconds in (during intro clip)
             elif comment.comment_type == "outro":
-                start_time = max(video_duration - 8.0, video_duration * 0.85)
+                start_time = max(video_duration - 12.0, video_duration * 0.85)
+            elif comment.comment_type == "song_intro":
+                # Song intro should play RIGHT AT the start of that song
+                if seg_idx < len(segment_timings):
+                    song_start = segment_timings[seg_idx]['start']
+                    # Start DJ comment 2 seconds into the song (after transition settles)
+                    start_time = song_start + 2.0
+                else:
+                    start_time = last_clip_end_time + 5.0
+            elif comment.comment_type == "transition":
+                # Transition comment plays BEFORE the next song starts (during crossfade)
+                if seg_idx < len(segment_timings):
+                    next_song_start = segment_timings[seg_idx]['start']
+                    # Start 5 seconds before the next song
+                    start_time = max(next_song_start - 5.0, last_clip_end_time + 3.0)
+                else:
+                    start_time = last_clip_end_time + 5.0
+            elif comment.comment_type == "hype" or comment.comment_type == "peak_energy":
+                # Hype/peak energy comments go in the MIDDLE of the song
+                if seg_idx < len(segment_timings):
+                    song_start = segment_timings[seg_idx]['start']
+                    song_duration = segment_timings[seg_idx]['duration']
+                    # Place at 40% into the song
+                    start_time = song_start + (song_duration * 0.4)
+                else:
+                    start_time = last_clip_end_time + 8.0
             else:
-                # Position at the start of the target segment
-                seg_idx = min(comment.segment_index, num_segments - 1)
-                start_time = seg_idx * segment_duration + 1.0  # 1 second into segment
+                # Other comments - position 30% into the segment
+                if seg_idx < len(segment_timings):
+                    song_start = segment_timings[seg_idx]['start']
+                    song_duration = segment_timings[seg_idx]['duration']
+                    start_time = song_start + (song_duration * 0.3)
+                else:
+                    start_time = last_clip_end_time + 5.0
+            
+            # Ensure no overlap with previous clip (at least 3s gap)
+            if start_time < last_clip_end_time + 3.0:
+                start_time = last_clip_end_time + 3.0
             
             # Generate voice clip
             log(f"[AZURE_DJ] Generating clip {i+1}/{len(comments)}: {comment.comment_type}")
@@ -620,7 +700,11 @@ def add_creative_dj_commentary_to_video(
                 
                 # Ensure clip doesn't extend past video
                 if start_time + clip_duration > video_duration:
-                    start_time = max(0, video_duration - clip_duration - 1)
+                    start_time = max(0, video_duration - clip_duration - 2)
+                
+                # Ensure no overlap with previous clip (at least 2s gap)
+                if start_time < last_clip_end_time + 2.0:
+                    start_time = last_clip_end_time + 2.0
                 
                 dj_clips.append({
                     "path": str(clip_path),
@@ -635,6 +719,10 @@ def add_creative_dj_commentary_to_video(
                     "end_time": start_time + clip_duration,
                     "text": comment.text[:50] + "..."
                 })
+                
+                # Track end time for next clip
+                last_clip_end_time = start_time + clip_duration
+                
                 log(f"[AZURE_DJ]   ✓ {comment.comment_type} @ {start_time:.1f}s ({clip_duration:.1f}s)")
             else:
                 log(f"[AZURE_DJ]   ✗ Failed to generate clip for {comment.comment_type}")
@@ -657,25 +745,25 @@ def add_creative_dj_commentary_to_video(
             end = start + clip["duration"]
             duck_expr_parts.append(f"between(t,{start},{end})")
         
-        # Music: duck to 15% during DJ
+        # Music: duck to 35% during DJ (music still audible but DJ is clear)
         if duck_expr_parts:
             duck_cond = '+'.join(duck_expr_parts)
-            filter_parts.append(f"[0:a]volume='if({duck_cond},0.15,1.0)':eval=frame[music]")
+            filter_parts.append(f"[0:a]volume='if({duck_cond},0.35,1.0)':eval=frame[music]")
         else:
             filter_parts.append("[0:a]anull[music]")
         
-        # Add each DJ clip
+        # Add each DJ clip - boost voice to be clear over ducked music
         mix_labels = ['[music]']
         for i, clip in enumerate(dj_clips):
             input_args.extend(['-i', clip["path"]])
             input_idx = i + 1
             delay_ms = int(clip["start_time"] * 1000)
-            filter_parts.append(f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume=3.0[dj{i}]")
+            filter_parts.append(f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume=2.0[dj{i}]")
             mix_labels.append(f'[dj{i}]')
         
-        # Final mix
+        # Final mix - balanced weights for music and DJ
         num_inputs = len(mix_labels)
-        weights = '1 ' + ' '.join(['3'] * (num_inputs - 1))
+        weights = '1 ' + ' '.join(['2.5'] * (num_inputs - 1))
         filter_parts.append(
             f"{''.join(mix_labels)}amix=inputs={num_inputs}:duration=first:dropout_transition=0:normalize=0:weights='{weights}'[aout]"
         )

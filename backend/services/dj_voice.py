@@ -714,10 +714,10 @@ def add_dj_commentary_to_video(
             end = start + clip["duration"]
             duck_expr_parts.append(f"between(t,{start},{end})")
         
-        # Music: duck to 15% during DJ, otherwise full
+        # Music: duck to 35% during DJ (music still audible but DJ is clear)
         if duck_expr_parts:
             duck_cond = '+'.join(duck_expr_parts)
-            filter_parts.append(f"[0:a]volume='if({duck_cond},0.15,1.0)':eval=frame[music]")
+            filter_parts.append(f"[0:a]volume='if({duck_cond},0.35,1.0)':eval=frame[music]")
         else:
             filter_parts.append("[0:a]anull[music]")
         

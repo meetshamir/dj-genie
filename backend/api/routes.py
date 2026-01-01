@@ -1225,3 +1225,199 @@ async def suggest_next_segment(
         ]
     }
 
+
+# ============== AI Chat Playlist Generation ==============
+
+class AIPlaylistRequest(BaseModel):
+    """Request model for AI-powered playlist generation."""
+    prompt: str  # Natural language description of desired playlist
+    target_duration_minutes: int = 30  # Target playlist duration
+    auto_download: bool = True  # Whether to download songs from YouTube
+    auto_export: bool = True  # Whether to auto-export with AI DJ
+    output_name: Optional[str] = None  # Custom output filename
+
+
+class AIPlaylistResponse(BaseModel):
+    """Response model for AI playlist generation."""
+    success: bool
+    message: str
+    theme: Optional[str] = None
+    songs_found: int = 0
+    songs_downloaded: int = 0
+    playlist_id: Optional[str] = None
+    export_path: Optional[str] = None
+    total_duration_seconds: float = 0.0
+    error: Optional[str] = None
+
+
+# Background job storage for AI playlist generation
+ai_playlist_jobs = {}
+
+
+@router.post("/ai-playlist/generate", response_model=AIPlaylistResponse)
+async def generate_ai_playlist(
+    request: AIPlaylistRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Generate a complete DJ playlist from a natural language prompt.
+    
+    This endpoint uses Azure OpenAI to:
+    1. Parse the prompt and recommend songs
+    2. Search YouTube for each song
+    3. Download the songs
+    4. Analyze them for BPM and energy
+    5. Create an optimal mix order
+    6. Export with AI DJ commentary
+    
+    Example prompts:
+    - "New year party 2026! Hit dance songs from Hindi, Tamil, Malayalam, Arabic, Turkish, English"
+    - "SRK hits, MJ classics, Tamil kuttu like Apdi Podu, Industry Baby, Badshah, AR Rahman"
+    - "80s/90s classics: Ice Ice Baby, George Michael, Bryan Adams mixed with modern hits"
+    """
+    try:
+        from services.song_recommender import create_playlist_from_prompt
+        
+        # Step 1: Parse prompt and get recommendations
+        plan = create_playlist_from_prompt(
+            request.prompt, 
+            request.target_duration_minutes,
+            find_youtube=request.auto_download
+        )
+        
+        if not plan:
+            return AIPlaylistResponse(
+                success=False,
+                message="Failed to understand the prompt or find songs",
+                error="AI could not parse the request"
+            )
+        
+        # Count songs with YouTube URLs
+        songs_with_url = [s for s in plan.songs if s.youtube_url]
+        
+        response = AIPlaylistResponse(
+            success=True,
+            message=f"Found {len(plan.songs)} song recommendations for '{plan.theme}'",
+            theme=plan.theme,
+            songs_found=len(plan.songs)
+        )
+        
+        # If auto_download is enabled, start the full generation in background
+        if request.auto_download and songs_with_url:
+            job_id = str(uuid.uuid4())
+            output_name = request.output_name or f"ai_mix_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Start background job
+            from services.auto_playlist import AutoPlaylistGenerator
+            
+            def run_generation():
+                generator = AutoPlaylistGenerator()
+                result = generator.generate_from_prompt(
+                    request.prompt,
+                    request.target_duration_minutes,
+                    segment_duration=30,
+                    output_name=output_name if request.auto_export else None
+                )
+                ai_playlist_jobs[job_id] = {
+                    "status": "complete" if result.success else "failed",
+                    "result": result
+                }
+            
+            ai_playlist_jobs[job_id] = {"status": "running"}
+            background_tasks.add_task(run_generation)
+            
+            response.message = f"Started generating playlist. Job ID: {job_id}"
+            response.playlist_id = job_id
+        
+        return response
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return AIPlaylistResponse(
+            success=False,
+            message="Failed to generate playlist",
+            error=str(e)
+        )
+
+
+@router.get("/ai-playlist/status/{job_id}")
+async def get_ai_playlist_status(job_id: str):
+    """Get the status of an AI playlist generation job."""
+    if job_id not in ai_playlist_jobs:
+        raise HTTPException(status_code=404, detail={"error": "JOB_NOT_FOUND"})
+    
+    job = ai_playlist_jobs[job_id]
+    
+    if job["status"] == "running":
+        return {"status": "running", "message": "Playlist generation in progress..."}
+    
+    result = job.get("result")
+    if result:
+        return {
+            "status": job["status"],
+            "success": result.success,
+            "theme": result.theme,
+            "songs_downloaded": result.songs_downloaded,
+            "total_duration_seconds": result.total_duration,
+            "playlist_id": result.playlist_id,
+            "export_path": result.export_path,
+            "error": result.error
+        }
+    
+    return {"status": job["status"]}
+
+
+@router.post("/ai-playlist/preview")
+async def preview_ai_playlist(request: AIPlaylistRequest):
+    """
+    Preview song recommendations without downloading.
+    Returns the AI-generated playlist plan.
+    """
+    try:
+        from services.song_recommender import create_playlist_from_prompt
+        
+        plan = create_playlist_from_prompt(
+            request.prompt,
+            request.target_duration_minutes,
+            find_youtube=True
+        )
+        
+        if not plan:
+            return {
+                "success": False,
+                "error": "Failed to parse prompt"
+            }
+        
+        songs_preview = []
+        for i, song in enumerate(plan.songs):
+            songs_preview.append({
+                "position": i + 1,
+                "title": song.title,
+                "artist": song.artist,
+                "language": song.language,
+                "era": song.era,
+                "genre": song.genre,
+                "youtube_url": song.youtube_url,
+                "youtube_found": song.youtube_url is not None,
+                "reason": song.reason
+            })
+        
+        return {
+            "success": True,
+            "theme": plan.theme,
+            "mood": plan.mood,
+            "dj_notes": plan.dj_notes,
+            "target_duration_minutes": plan.target_duration_minutes,
+            "songs": songs_preview,
+            "songs_total": len(plan.songs),
+            "songs_found_on_youtube": sum(1 for s in plan.songs if s.youtube_url)
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e)
+        }
