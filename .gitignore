@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+**/venv/
+backend/venv/
+ENV/
+env/
+.eggs/
+*.egg-info/
+*.egg
+
+# Node
+node_modules/
+**/node_modules/
+dist/
+build/
+.npm
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+server.log
+server_out.log
+server_err.log
+
+# Database
+*.sqlite
+*.db
+database.sqlite
+
+# Temp files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+exports/
+downloads/
+
+# Cache
+.cache/
+cache/
+
+# Backup files
+*_backup.py
+
+# Media exports
+*.mp4
+*.mp3
