@@ -22,24 +22,28 @@ def log(msg: str):
     print(msg, flush=True)
     sys.stdout.flush()
 
-# Azure OpenAI configuration
-AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
+# Azure OpenAI configuration - Using AAD authentication (DefaultAzureCredential)
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://aidj-openai.openai.azure.com/")
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-AZURE_OPENAI_AUDIO_DEPLOYMENT = os.environ.get("AZURE_OPENAI_AUDIO_DEPLOYMENT", "gpt-4o-mini-audio-preview")
+AZURE_OPENAI_AUDIO_DEPLOYMENT = os.environ.get("AZURE_OPENAI_AUDIO_DEPLOYMENT", "gpt-4o-mini-audio")
 
-# Check if Azure OpenAI is configured
-AZURE_OPENAI_AVAILABLE = bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)
+# Check if Azure OpenAI is configured (using AAD auth - no API key needed!)
+AZURE_OPENAI_AVAILABLE = bool(AZURE_OPENAI_ENDPOINT)
+_azure_credential = None
+_AzureOpenAI = None
 
 if AZURE_OPENAI_AVAILABLE:
     try:
-        from openai import AzureOpenAI
-        log("[AZURE_DJ] Azure OpenAI is configured and available")
-    except ImportError:
+        from openai import AzureOpenAI as _AzureOpenAI
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+        _azure_credential = DefaultAzureCredential()
+        log("[AZURE_DJ] Azure OpenAI configured with AAD authentication (DefaultAzureCredential)")
+    except ImportError as e:
         AZURE_OPENAI_AVAILABLE = False
-        log("[AZURE_DJ] openai package not installed")
+        log(f"[AZURE_DJ] Required packages not installed: {e}")
+        log("[AZURE_DJ] Run: pip install openai azure-identity")
 else:
-    log("[AZURE_DJ] Azure OpenAI not configured (missing AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY)")
+    log("[AZURE_DJ] Azure OpenAI not configured (missing AZURE_OPENAI_ENDPOINT)")
 
 # Fallback to edge-tts if Azure OpenAI is not available
 try:
@@ -103,16 +107,24 @@ class CreativeDJComment:
     voice_style: str = "energetic"
 
 
-def get_azure_openai_client() -> Optional['AzureOpenAI']:
-    """Get Azure OpenAI client if available."""
-    if not AZURE_OPENAI_AVAILABLE:
+def get_azure_openai_client():
+    """Get Azure OpenAI client if available, using AAD authentication."""
+    global _azure_credential, _AzureOpenAI
+    
+    if not AZURE_OPENAI_AVAILABLE or not _AzureOpenAI or not _azure_credential:
         return None
     
     try:
-        client = AzureOpenAI(
+        from azure.identity import get_bearer_token_provider
+        token_provider = get_bearer_token_provider(
+            _azure_credential,
+            "https://cognitiveservices.azure.com/.default"
+        )
+        
+        client = _AzureOpenAI(
             api_version="2025-01-01-preview",
-            api_key=AZURE_OPENAI_API_KEY,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            azure_ad_token_provider=token_provider
         )
         return client
     except Exception as e:
