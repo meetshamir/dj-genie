@@ -91,8 +91,8 @@ Using **librosa** for audio analysis:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/dj-genie.git
-   cd dj-genie
+   git clone https://github.com/meetshamir/video-dj-playlist.git
+   cd video-dj-playlist
    ```
 
 2. **Set up Python environment**
