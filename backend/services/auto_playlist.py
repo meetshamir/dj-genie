@@ -48,6 +48,8 @@ class DownloadedSong:
     energy: float = 0.7
     best_segment_start: float = 0.0
     best_segment_end: float = 30.0
+    # YouTube "Most Replayed" heatmap data - list of {start_time, end_time, value}
+    youtube_heatmap: Optional[List[Dict[str, float]]] = None
 
 
 @dataclass
@@ -86,11 +88,11 @@ class AutoPlaylistGenerator:
     def download_song(self, song: SongRecommendation, index: int, total: int) -> Optional[DownloadedSong]:
         """Download a single song from YouTube"""
         if not song.youtube_url:
-            self.log(f"  ✗ No YouTube URL for {song.title}")
+            self.log(f"  [FAIL] No YouTube URL for {song.title}")
             return None
         
         if not YT_DLP_AVAILABLE:
-            self.log("  ✗ yt-dlp not available")
+            self.log("  [FAIL] yt-dlp not available")
             return None
         
         # Create safe filename
@@ -98,50 +100,93 @@ class AutoPlaylistGenerator:
         safe_name = "".join(c for c in safe_name if c.isalnum() or c in "_-")[:50]
         output_template = str(self.downloads_dir / f"{safe_name}_%(id)s.%(ext)s")
         
-        ydl_opts = {
-            'format': 'best[height<=1080]',  # 1080p for HQ output
+        ydl_opts_base = {
+            'format': 'best[height<=720]/bestvideo[height<=720]+bestaudio',  # 720p, prefer single file format
             'outtmpl': output_template,
             'quiet': True,
             'no_warnings': True,
             'extract_audio': False,
+            'merge_output_format': 'mp4',  # Ensure mp4 output
+            'postprocessor_args': {'ffmpeg': ['-c', 'copy']},  # Fast copy without re-encode
         }
+        
+        # Check if cookies file exists - try multiple locations
+        cookies_candidates = [
+            self.downloads_dir.parent / "youtube_cookies.txt",  # cache/youtube_cookies.txt
+            self.downloads_dir.parent.parent / "cache" / "youtube_cookies.txt",  # project/cache/youtube_cookies.txt
+            Path.home() / "video-dj-playlist" / "cache" / "youtube_cookies.txt",  # home dir
+        ]
+        cookies_file = None
+        for candidate in cookies_candidates:
+            if candidate.exists():
+                cookies_file = candidate
+                break
+        
+        if cookies_file:
+            ydl_opts_base['cookiefile'] = str(cookies_file)
+            self.log(f"    [INFO] Using cookies from {cookies_file}")
         
         try:
             self.log(f"  [{index}/{total}] Downloading: {song.artist} - {song.title}...")
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(song.youtube_url, download=True)
-                
-                # Find the downloaded file
-                video_path = None
-                for ext in ['mp4', 'webm', 'mkv']:
-                    potential = self.downloads_dir / f"{safe_name}_{info['id']}.{ext}"
-                    if potential.exists():
-                        video_path = str(potential)
-                        break
-                
-                if not video_path:
-                    # Try to find by pattern
-                    for f in self.downloads_dir.glob(f"{safe_name}*"):
-                        if f.suffix in ['.mp4', '.webm', '.mkv']:
-                            video_path = str(f)
-                            break
-                
-                if not video_path:
-                    self.log(f"    ✗ Downloaded file not found")
-                    return None
-                
-                downloaded = DownloadedSong(
-                    original=song,
-                    video_path=video_path,
-                    duration=info.get('duration', 180)
-                )
-                
-                self.log(f"    ✓ Downloaded ({downloaded.duration:.0f}s)")
-                return downloaded
+            # Try different configurations to bypass bot detection
+            configs = [
+                ydl_opts_base,  # Try base config first (with cookies file if exists)
+                {**ydl_opts_base, 'extractor_args': {'youtube': {'player_client': ['tv_embedded', 'web']}}},  # Try tv_embedded
+                {**ydl_opts_base, 'extractor_args': {'youtube': {'player_client': ['web_music']}}},  # Try web_music
+            ]
+            
+            last_error = None
+            for opts in configs:
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(song.youtube_url, download=True)
+                        
+                        # Find the downloaded file
+                        video_path = None
+                        for ext in ['mp4', 'webm', 'mkv']:
+                            potential = self.downloads_dir / f"{safe_name}_{info['id']}.{ext}"
+                            if potential.exists():
+                                video_path = str(potential)
+                                break
+                        
+                        if not video_path:
+                            # Try to find by pattern
+                            for f in self.downloads_dir.glob(f"{safe_name}*"):
+                                if f.suffix in ['.mp4', '.webm', '.mkv']:
+                                    video_path = str(f)
+                                    break
+                        
+                        if not video_path:
+                            self.log(f"    [FAIL] Downloaded file not found")
+                            return None
+                        
+                        # Extract YouTube "Most Replayed" heatmap data if available
+                        # This shows which parts viewers replay most - great for finding catchy segments!
+                        heatmap_data = info.get('heatmap')
+                        if heatmap_data:
+                            self.log(f"    [HEATMAP] Found YouTube 'Most Replayed' data ({len(heatmap_data)} points)")
+                        
+                        downloaded = DownloadedSong(
+                            original=song,
+                            video_path=video_path,
+                            duration=info.get('duration', 180),
+                            youtube_heatmap=heatmap_data
+                        )
+                        
+                        self.log(f"    [OK] Downloaded ({downloaded.duration:.0f}s)")
+                        return downloaded
+                except Exception as e:
+                    last_error = e
+                    self.log(f"    [RETRY] Download attempt failed, trying alternative...")
+                    continue
+            
+            # All attempts failed
+            if last_error:
+                raise last_error
                 
         except Exception as e:
-            self.log(f"    ✗ Download failed: {e}")
+            self.log(f"    [FAIL] Download failed: {e}")
             return None
     
     def _calculate_segment_duration(self, energy: float, song_duration: float) -> float:
@@ -170,21 +215,213 @@ class AutoPlaylistGenerator:
         
         return target
     
+    def _find_best_segment_from_heatmap(
+        self, 
+        heatmap: List[Dict[str, float]], 
+        target_duration: float,
+        max_start_time: float = 180.0
+    ) -> Optional[tuple]:
+        """
+        Find the best segment using YouTube's "Most Replayed" heatmap data.
+        
+        The heatmap contains [{start_time, end_time, value}] where value (0-1) 
+        represents replay intensity - higher values mean more viewers replayed that part.
+        
+        Args:
+            heatmap: YouTube heatmap data from yt-dlp
+            target_duration: Desired segment length in seconds
+            max_start_time: Only consider segments starting before this time (default: first 3 mins)
+            
+        Returns:
+            (best_start, best_end, peak_value) or None if no valid segment found
+        """
+        if not heatmap:
+            return None
+        
+        # Filter heatmap to first 3 minutes (user requested optimization)
+        filtered_heatmap = [
+            h for h in heatmap 
+            if h.get('start_time', 0) < max_start_time
+        ]
+        
+        if not filtered_heatmap:
+            return None
+        
+        # Find the segment with highest average replay intensity
+        best_start = 0
+        best_score = 0
+        
+        # Sort by start_time for sliding window approach
+        sorted_heatmap = sorted(filtered_heatmap, key=lambda h: h.get('start_time', 0))
+        
+        for i, point in enumerate(sorted_heatmap):
+            start_time = point.get('start_time', 0)
+            
+            # Skip if segment would start too late
+            if start_time > max_start_time - target_duration:
+                break
+            
+            # Calculate average replay value for this potential segment
+            segment_end = start_time + target_duration
+            segment_values = []
+            
+            for h in sorted_heatmap:
+                h_start = h.get('start_time', 0)
+                h_end = h.get('end_time', h_start + 1)
+                h_value = h.get('value', 0)
+                
+                # Check if this heatmap point overlaps with our segment
+                if h_start < segment_end and h_end > start_time:
+                    segment_values.append(h_value)
+            
+            if segment_values:
+                avg_score = sum(segment_values) / len(segment_values)
+                if avg_score > best_score:
+                    best_score = avg_score
+                    best_start = start_time
+        
+        if best_score > 0:
+            return (best_start, best_start + target_duration, best_score)
+        
+        return None
+    
+    def _find_nearest_beat_boundary(self, target_time: float, beat_times: np.ndarray, prefer_direction: str = "before") -> float:
+        """
+        Find the nearest beat/phrase boundary to ensure we don't cut mid-lyric.
+        
+        Args:
+            target_time: The target time we want to cut at
+            beat_times: Array of detected beat times
+            prefer_direction: "before" to prefer earlier beat, "after" to prefer later
+        
+        Returns:
+            The nearest beat time to the target
+        """
+        if len(beat_times) == 0:
+            return target_time
+        
+        # Find beats within a reasonable range (±5 seconds)
+        nearby_beats = beat_times[np.abs(beat_times - target_time) <= 5.0]
+        
+        if len(nearby_beats) == 0:
+            # No beats nearby, use original time
+            return target_time
+        
+        if prefer_direction == "before":
+            # Prefer beats BEFORE the target (don't cut too early into next phrase)
+            before_beats = nearby_beats[nearby_beats <= target_time]
+            if len(before_beats) > 0:
+                return float(before_beats[-1])  # Last beat before target
+        else:  # prefer "after"
+            # Prefer beats AFTER the target (give the current phrase time to finish)
+            after_beats = nearby_beats[nearby_beats >= target_time]
+            if len(after_beats) > 0:
+                return float(after_beats[0])  # First beat after target
+        
+        # Fallback: just use the closest beat
+        closest_idx = np.argmin(np.abs(nearby_beats - target_time))
+        return float(nearby_beats[closest_idx])
+    
+    def _find_phrase_boundary(self, y: np.ndarray, sr: int, target_time: float, search_range: float = 3.0) -> float:
+        """
+        Find a natural phrase boundary near the target time.
+        
+        Uses onset detection and spectral flux to find moments of low activity
+        (silences or transitions between phrases) where cuts sound natural.
+        
+        Args:
+            y: Audio signal
+            sr: Sample rate
+            target_time: Where we want to cut
+            search_range: How many seconds to search around target
+        
+        Returns:
+            Best phrase boundary time near target
+        """
+        # Convert time range to samples
+        start_sample = max(0, int((target_time - search_range) * sr))
+        end_sample = min(len(y), int((target_time + search_range) * sr))
+        
+        if end_sample <= start_sample:
+            return target_time
+        
+        # Extract the search region
+        region = y[start_sample:end_sample]
+        
+        # Calculate short-time energy (RMS in small windows)
+        hop_length = 512
+        frame_length = 2048
+        
+        try:
+            # Get RMS energy
+            rms = librosa.feature.rms(y=region, frame_length=frame_length, hop_length=hop_length)[0]
+            
+            # Find local minima in energy (potential phrase boundaries)
+            # These are moments where the music gets quieter
+            from scipy.signal import find_peaks
+            
+            # Invert RMS to find minima as peaks
+            inv_rms = 1.0 - (rms / (rms.max() + 1e-8))
+            
+            # Find peaks in inverted RMS (= energy dips)
+            peaks, properties = find_peaks(inv_rms, height=0.3, distance=sr // hop_length // 2)  # At least 0.5s apart
+            
+            if len(peaks) == 0:
+                return target_time
+            
+            # Convert peak frames to times
+            peak_times = (peaks * hop_length / sr) + (target_time - search_range)
+            
+            # Find the peak closest to our target
+            closest_idx = np.argmin(np.abs(peak_times - target_time))
+            boundary_time = peak_times[closest_idx]
+            
+            print(f"[AUTO_PLAYLIST]     [PHRASE] Found phrase boundary at {boundary_time:.2f}s (target was {target_time:.2f}s)")
+            
+            return float(boundary_time)
+            
+        except Exception as e:
+            print(f"[AUTO_PLAYLIST]     [PHRASE] Phrase detection failed: {e}")
+            return target_time
+
     def analyze_song(self, song: DownloadedSong) -> DownloadedSong:
-        """Analyze a song for BPM, energy, and find best HIGH-ENERGY segment"""
+        """
+        Analyze a song for BPM, energy, and find best HIGH-ENERGY segment.
+        
+        Uses a hybrid approach:
+        1. YouTube "Most Replayed" heatmap (if available) - shows what viewers replay most
+        2. Librosa audio energy analysis - finds loudest/most energetic parts
+        3. Beat tracking to ensure segment boundaries align with musical phrases
+        4. Combines all signals for best segment selection with natural cuts
+        """
+        duration = song.duration
+        
+        # First, try to get segment from YouTube heatmap (what people actually replay)
+        heatmap_segment = None
+        if song.youtube_heatmap:
+            # We'll get seg_duration after estimating energy, but use a default first
+            estimated_seg_duration = 60.0  # Initial estimate
+            heatmap_segment = self._find_best_segment_from_heatmap(
+                song.youtube_heatmap, 
+                estimated_seg_duration,
+                max_start_time=180.0  # Focus on first 3 minutes
+            )
+            if heatmap_segment:
+                print(f"[AUTO_PLAYLIST]   [HEATMAP] YouTube suggests segment at {heatmap_segment[0]:.1f}s (popularity: {heatmap_segment[2]:.2f})")
+        
         if not LIBROSA_AVAILABLE:
             # Use defaults with some variation based on title hash
             song.bpm = 120 + (hash(song.original.title) % 40 - 20)
             song.energy = 0.6 + (hash(song.original.artist) % 40) / 100
             
-            # For most songs, the chorus/drop is typically between 25-40% into the song
-            # This is where the "popular" part usually is (what people remember)
-            duration = song.duration
-            
             # Calculate dynamic segment duration based on energy
             seg_duration = self._calculate_segment_duration(song.energy, duration)
             
-            if duration > 180:
+            # If we have heatmap data, use it!
+            if heatmap_segment:
+                song.best_segment_start = heatmap_segment[0]
+                song.best_segment_end = heatmap_segment[0] + seg_duration
+            elif duration > 180:
                 # Long songs (>3 min): start at 30-35% (after verse, into first chorus)
                 song.best_segment_start = duration * 0.32
             elif duration > 120:
@@ -206,11 +443,11 @@ class AutoPlaylistGenerator:
             return song
         
         try:
-            # Extract audio for analysis - analyze MORE of the song to find the real peak
+            # Extract audio for analysis - analyze first 3 minutes for speed
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
                 audio_path = tmp.name
             
-            # Analyze up to 3 minutes to find the actual high-energy portion
+            # Analyze up to 3 minutes (user-requested optimization)
             analyze_duration = min(180, song.duration)
             cmd = [
                 'ffmpeg', '-y', '-i', song.video_path,
@@ -224,11 +461,15 @@ class AutoPlaylistGenerator:
                 # Load and analyze
                 y, sr = librosa.load(audio_path, sr=22050, duration=analyze_duration)
                 
-                # Detect BPM
-                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                # Detect BPM and beat times for phrase-aligned cuts
+                tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
                 if hasattr(tempo, '__iter__'):
                     tempo = float(tempo[0])
                 song.bpm = float(tempo)
+                
+                # Convert beat frames to times
+                beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+                print(f"[AUTO_PLAYLIST]   [BEATS] Detected {len(beat_times)} beats, tempo: {song.bpm:.0f} BPM")
                 
                 # Calculate energy (RMS)
                 rms = librosa.feature.rms(y=y)[0]
@@ -238,42 +479,99 @@ class AutoPlaylistGenerator:
                 # Calculate dynamic segment duration based on energy
                 seg_duration = self._calculate_segment_duration(song.energy, song.duration)
                 
-                # Find most energetic segment using a sliding window
+                # Find best segment using HYBRID approach
                 hop_length = 512
-                window_seconds = seg_duration  # Match our target segment duration
+                window_seconds = seg_duration
                 window_size = int(window_seconds * sr / hop_length)
                 
+                # Calculate audio energy scores for each position
+                audio_best_start = 0
+                audio_max_energy = 0
+                
                 if len(rms) > window_size:
-                    # Sliding window to find max energy section
-                    max_energy = 0
-                    best_start_frame = 0
                     for i in range(len(rms) - window_size):
                         window_energy = np.sum(rms[i:i+window_size])
-                        if window_energy > max_energy:
-                            max_energy = window_energy
-                            best_start_frame = i
+                        if window_energy > audio_max_energy:
+                            audio_max_energy = window_energy
+                            audio_best_start = i * hop_length / sr
+                
+                # HYBRID DECISION: Combine YouTube heatmap with audio energy
+                if heatmap_segment and audio_max_energy > 0:
+                    # Both signals available - use weighted combination
+                    heatmap_start = heatmap_segment[0]
+                    heatmap_score = heatmap_segment[2]
                     
-                    song.best_segment_start = best_start_frame * hop_length / sr
-                    song.best_segment_end = song.best_segment_start + seg_duration
+                    # Calculate audio energy at heatmap's suggested position
+                    heatmap_frame = int(heatmap_start * sr / hop_length)
+                    if heatmap_frame + window_size < len(rms):
+                        heatmap_audio_energy = np.sum(rms[heatmap_frame:heatmap_frame + window_size])
+                        heatmap_audio_ratio = heatmap_audio_energy / audio_max_energy
+                    else:
+                        heatmap_audio_ratio = 0.5
                     
-                    # Ensure we don't overflow the song duration
-                    if song.best_segment_end > song.duration:
-                        song.best_segment_start = max(0, song.duration - seg_duration)
-                        song.best_segment_end = song.best_segment_start + seg_duration
+                    # If heatmap spot has decent energy (>50% of max), prefer it
+                    # because viewer engagement is a strong signal
+                    if heatmap_audio_ratio > 0.5 or heatmap_score > 0.7:
+                        raw_start = heatmap_start
+                        print(f"[AUTO_PLAYLIST]   -> Using YouTube heatmap position (audio energy: {heatmap_audio_ratio:.0%} of peak)")
+                    else:
+                        raw_start = audio_best_start
+                        print(f"[AUTO_PLAYLIST]   -> Using audio energy peak (heatmap spot had low energy)")
+                        
+                elif heatmap_segment:
+                    # Only heatmap available
+                    raw_start = heatmap_segment[0]
+                    print(f"[AUTO_PLAYLIST]   -> Using YouTube heatmap position")
                 else:
-                    song.best_segment_start = 0
-                    song.best_segment_end = min(seg_duration, song.duration)
+                    # Only audio analysis available
+                    raw_start = audio_best_start
+                
+                raw_end = raw_start + seg_duration
+                
+                # BEAT-ALIGN the segment boundaries to avoid cutting mid-phrase/lyric!
+                # Start: snap to nearest beat AFTER the raw start (give intro time)
+                aligned_start = self._find_nearest_beat_boundary(raw_start, beat_times, prefer_direction="after")
+                
+                # Try to find a phrase boundary for the end (a moment of lower energy)
+                try:
+                    aligned_end = self._find_phrase_boundary(y, sr, raw_end, search_range=3.0)
+                except:
+                    # Fallback: snap to nearest beat BEFORE the raw end (let current phrase finish)
+                    aligned_end = self._find_nearest_beat_boundary(raw_end, beat_times, prefer_direction="before")
+                
+                # Ensure minimum segment duration after alignment
+                if aligned_end - aligned_start < 40:
+                    # Alignment made segment too short, use beat alignment only
+                    aligned_start = self._find_nearest_beat_boundary(raw_start, beat_times, prefer_direction="after")
+                    aligned_end = aligned_start + seg_duration
+                    aligned_end = self._find_nearest_beat_boundary(aligned_end, beat_times, prefer_direction="before")
+                
+                song.best_segment_start = aligned_start
+                song.best_segment_end = aligned_end
+                
+                print(f"[AUTO_PLAYLIST]   [ALIGNED] {raw_start:.1f}s-{raw_end:.1f}s -> {aligned_start:.1f}s-{aligned_end:.1f}s (beat/phrase aligned)")
+                
+                # Ensure we don't overflow the song duration
+                if song.best_segment_end > song.duration:
+                    song.best_segment_start = max(0, song.duration - seg_duration)
+                    song.best_segment_end = song.best_segment_start + seg_duration
                 
                 # Clean up
                 Path(audio_path).unlink(missing_ok=True)
                 
         except Exception as e:
             print(f"[AUTO_PLAYLIST] Analysis error for {song.original.title}: {e}")
-            # Use defaults
+            # Use defaults, but still try heatmap if available
             song.bpm = 120
             song.energy = 0.7
-            song.best_segment_start = song.duration * 0.25
-            song.best_segment_end = min(song.best_segment_start + 30, song.duration)
+            seg_duration = 60.0
+            
+            if heatmap_segment:
+                song.best_segment_start = heatmap_segment[0]
+            else:
+                song.best_segment_start = song.duration * 0.25
+            
+            song.best_segment_end = min(song.best_segment_start + seg_duration, song.duration)
         
         return song
     
@@ -345,7 +643,7 @@ class AutoPlaylistGenerator:
         
         try:
             # Step 1: Parse prompt and get song recommendations
-            self.log("🎵 Analyzing your request with AI...", 0.05)
+            self.log("[MUSIC] Analyzing your request with AI...", 0.05)
             plan = create_playlist_from_prompt(prompt, target_duration_minutes, find_youtube=True)
             
             if not plan:
@@ -353,11 +651,11 @@ class AutoPlaylistGenerator:
                 return result
             
             result.theme = plan.theme
-            self.log(f"✓ Theme: {plan.theme}", 0.10)
+            self.log(f"[OK] Theme: {plan.theme}", 0.10)
             self.log(f"  Found {len(plan.songs)} song recommendations", 0.10)
             
             # Step 2: Download songs with YouTube URLs
-            self.log("📥 Downloading songs from YouTube...", 0.15)
+            self.log("[DOWNLOAD] Downloading songs from YouTube...", 0.15)
             songs_with_url = [s for s in plan.songs if s.youtube_url]
             
             if not songs_with_url:
@@ -376,27 +674,27 @@ class AutoPlaylistGenerator:
                 return result
             
             result.songs_downloaded = len(downloaded_songs)
-            self.log(f"✓ Downloaded {len(downloaded_songs)} songs", 0.60)
+            self.log(f"[OK] Downloaded {len(downloaded_songs)} songs", 0.60)
             
             # Step 3: Analyze songs
-            self.log("🔍 Analyzing songs for BPM and energy...", 0.62)
+            self.log("[ANALYZE] Analyzing songs for BPM and energy...", 0.62)
             for i, song in enumerate(downloaded_songs):
                 self.analyze_song(song)
                 self.log(f"  {song.original.title}: {song.bpm:.0f} BPM, Energy {song.energy:.0%}", 
                         0.62 + (0.08 * i / len(downloaded_songs)))
             
             # Step 4: Create optimal mix order
-            self.log("🎚️ Creating optimal mix order...", 0.72)
+            self.log("[MIX] Creating optimal mix order...", 0.72)
             ordered_songs = self.create_mix_order(downloaded_songs)
             
             # Step 5: Add to database and create playlist
-            self.log("💾 Adding songs to database...", 0.75)
+            self.log("[SAVE] Adding songs to database...", 0.75)
             playlist_id, db_songs = self._create_database_entries(ordered_songs, plan, segment_duration)
             result.playlist_id = playlist_id
             
             # Step 6: Export with AI DJ
             if output_name:
-                self.log("🎤 Generating AI DJ commentary and export...", 0.80)
+                self.log("[DJ] Generating AI DJ commentary and export...", 0.80)
                 export_path = self._export_with_dj(
                     playlist_id, ordered_songs, plan, output_name,
                     custom_shoutouts=custom_shoutouts,
@@ -410,7 +708,7 @@ class AutoPlaylistGenerator:
             )
             
             result.success = True
-            self.log("✅ Playlist created successfully!", 1.0)
+            self.log("[SUCCESS] Playlist created successfully!", 1.0)
             
             return result
             
@@ -609,7 +907,7 @@ class AutoPlaylistGenerator:
             result = export_playlist(
                 segments=segments,
                 output_name=output_name,
-                crossfade_duration=1.5,
+                crossfade_duration=3.5,  # Extended crossfade for smooth music blending
                 transition_type="random",
                 add_text_overlay=True,
                 video_quality="1080p",

@@ -1614,6 +1614,11 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
     songs = json.loads(plan.songs) if plan.songs else []
     total_songs = len(songs)
     
+    # Get theme and shoutouts for DJ voice
+    plan_theme = plan.theme or "Party Mix"
+    plan_shoutouts = json.loads(plan.shoutouts) if plan.shoutouts else []
+    plan_mood = plan.mood if hasattr(plan, 'mood') and plan.mood else "energetic, fun"
+    
     # Initialize export job in the shared dict
     export_jobs[job_id] = {
         "status": "pending",
@@ -1621,41 +1626,356 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
         "current_step": "Starting...",
         "segment_index": 0,
         "total_segments": total_songs,
-        "result": None
+        "result": None,
+        "output_path": None
     }
     
-    # Run export simulation in background
+    # Run real export pipeline in background
     def run_ai_export():
+        """
+        Real export pipeline:
+        1. Download songs from YouTube
+        2. Analyze for BPM/energy and find best segments (using YouTube heatmap + audio analysis)
+        3. Export as a mixed video with crossfades
+        """
+        from services.auto_playlist import AutoPlaylistGenerator, DownloadedSong
+        from services.song_recommender import SongRecommendation
+        from services.exporter import export_playlist
+        from pathlib import Path
+        import os
+        import sys
+        
+        print(f"[AI_EXPORT] ========== Starting export for job {job_id} ==========", flush=True)
+        print(f"[AI_EXPORT] Songs to process: {len(songs)}", flush=True)
+        for s in songs:
+            print(f"[AI_EXPORT]   - {s.get('artist', 'Unknown')} - {s.get('title', 'Unknown')}", flush=True)
+        
         try:
-            for i, song in enumerate(songs):
+            # Create progress callback for the generator
+            def update_progress(message: str, progress: float):
                 export_jobs[job_id].update({
-                    "status": "processing",
-                    "progress": int((i / total_songs) * 100),
-                    "current_step": f"Processing: {song.get('title', 'Unknown')}",
-                    "segment_index": i + 1,
-                    "total_segments": total_songs
+                    "current_step": message,
+                    "progress": int(progress * 100)
                 })
-                time.sleep(1)  # Simulate processing time
             
-            # Mark complete
+            generator = AutoPlaylistGenerator(
+                downloads_dir=str(settings.cache_dir / "downloads"),
+                exports_dir=str(settings.exports_dir),
+                progress_callback=update_progress
+            )
+            
+            # Phase 0: Search YouTube for URLs (songs from AI chat may not have URLs)
+            # Use yt-dlp directly to avoid SongRecommender's Azure OpenAI initialization
+            import yt_dlp
+            import sys
+            from pathlib import Path
+            
+            def search_youtube_direct(query: str) -> dict:
+                """Search YouTube directly with yt-dlp, no Azure OpenAI needed"""
+                # Check for cookies file
+                cookies_file = settings.cache_dir / "youtube_cookies.txt"
+                
+                ydl_opts_base = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': True,
+                    'default_search': 'ytsearch',
+                }
+                
+                # Add cookies if available
+                if cookies_file.exists():
+                    ydl_opts_base['cookiefile'] = str(cookies_file)
+                
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts_base) as ydl:
+                        result = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                        if result and 'entries' in result and result['entries']:
+                            video = result['entries'][0]
+                            return {
+                                'id': video.get('id'),
+                                'title': video.get('title'),
+                                'url': f"https://www.youtube.com/watch?v={video.get('id')}",
+                                'duration': video.get('duration', 0),
+                            }
+                except Exception as e:
+                    print(f"[AI_EXPORT] YouTube search failed: {e}", flush=True)
+                return None
+            
+            songs_with_urls = []
+            for i, song_data in enumerate(songs):
+                export_jobs[job_id].update({
+                    "status": "searching",
+                    "current_step": f"Finding on YouTube ({i+1}/{total_songs}): {song_data.get('title', 'Unknown')}",
+                    "progress": int((i / total_songs) * 10),  # Search = 0-10%
+                    "segment_index": i + 1
+                })
+                print(f"[AI_EXPORT] Searching for: {song_data.get('title', 'Unknown')}", flush=True)
+                
+                # If no youtube_url, search for it
+                if not song_data.get('youtube_url'):
+                    search_query = f"{song_data.get('artist', '')} {song_data.get('title', '')} official"
+                    result = search_youtube_direct(search_query)
+                    if result:
+                        song_data['youtube_url'] = result['url']
+                        song_data['youtube_id'] = result['id']
+                        print(f"[AI_EXPORT] [OK] Found: {song_data.get('title')} -> {result['url']}", flush=True)
+                    else:
+                        print(f"[AI_EXPORT] [FAIL] Not found on YouTube: {song_data.get('title')}", flush=True)
+                
+                if song_data.get('youtube_url'):
+                    songs_with_urls.append(song_data)
+            
+            if not songs_with_urls:
+                raise Exception("No songs found on YouTube")
+            
+            # Phase 1: Download songs
+            export_jobs[job_id].update({
+                "status": "downloading",
+                "current_step": "Downloading songs from YouTube...",
+                "progress": 10
+            })
+            
+            downloaded_songs = []
+            for i, song_data in enumerate(songs_with_urls):
+                # Convert dict to SongRecommendation
+                song_rec = SongRecommendation(
+                    title=song_data.get('title', 'Unknown'),
+                    artist=song_data.get('artist', 'Unknown Artist'),
+                    language=song_data.get('language', 'English'),
+                    era=song_data.get('era', 'recent'),
+                    genre=song_data.get('genre', 'pop'),
+                    search_query=song_data.get('search_query', f"{song_data.get('artist', '')} {song_data.get('title', '')}"),
+                    youtube_url=song_data.get('youtube_url'),
+                    youtube_id=song_data.get('youtube_id'),
+                    reason=song_data.get('reason', song_data.get('why', ''))
+                )
+                
+                export_jobs[job_id].update({
+                    "current_step": f"Downloading ({i+1}/{len(songs_with_urls)}): {song_rec.artist} - {song_rec.title}",
+                    "progress": 10 + int((i / len(songs_with_urls)) * 25),  # Downloads = 10-35%
+                    "segment_index": i + 1
+                })
+                
+                downloaded = generator.download_song(song_rec, i + 1, len(songs_with_urls))
+                if downloaded:
+                    downloaded_songs.append(downloaded)
+            
+            if not downloaded_songs:
+                raise Exception("No songs could be downloaded")
+            
+            # Phase 2: Analyze songs (uses YouTube heatmap + audio analysis)
+            export_jobs[job_id].update({
+                "status": "analyzing",
+                "current_step": "Analyzing songs for best segments...",
+                "progress": 35
+            })
+            
+            for i, song in enumerate(downloaded_songs):
+                export_jobs[job_id].update({
+                    "current_step": f"Analyzing ({i+1}/{len(downloaded_songs)}): {song.original.title}",
+                    "progress": 35 + int((i / len(downloaded_songs)) * 15)  # Analysis = 35-50%
+                })
+                generator.analyze_song(song)
+            
+            # Phase 3: Create optimal mix order
+            export_jobs[job_id].update({
+                "status": "mixing",
+                "current_step": "Creating optimal mix order...",
+                "progress": 50
+            })
+            ordered_songs = generator.create_mix_order(downloaded_songs)
+            
+            # Phase 4: Export with FFmpeg
+            export_jobs[job_id].update({
+                "status": "exporting",
+                "current_step": "Exporting video with crossfades...",
+                "progress": 55
+            })
+            
+            # Prepare segments for the exporter
+            # The exporter expects a list of dicts with: video_path, start, end, title, artist
+            segments_for_export = []
+            for song in ordered_songs:
+                segments_for_export.append({
+                    "video_path": song.video_path,
+                    "start": song.best_segment_start,
+                    "end": song.best_segment_end,
+                    "title": song.original.title,
+                    "artist": song.original.artist,
+                    "language": song.original.language
+                })
+            
+            # Generate output path - use absolute path from settings
+            output_dir = settings.exports_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_filename = f"ai_mix_{job_id[:8]}.mp4"
+            output_path = output_dir / output_filename
+            
+            # Use the exporter to create the final mix
+            # Create a progress callback for export phase
+            def export_progress(segment_idx: int, total: int, step: str):
+                base_progress = 55
+                export_range = 40  # 55% to 95%
+                segment_progress = (segment_idx / total) * export_range
+                export_jobs[job_id].update({
+                    "current_step": f"Exporting: {step}",
+                    "progress": int(base_progress + segment_progress),
+                    "segment_index": segment_idx
+                })
+            
+            # Use create_transition_concat for smooth crossfades and visible transitions
+            from services.exporter import create_transition_concat, extract_and_overlay_segment
+            
+            # First extract all segments with overlays
+            temp_segments = []
+            for i, seg in enumerate(segments_for_export):
+                export_progress(i + 1, len(segments_for_export), f"Processing {seg['title']}")
+                
+                temp_path = output_dir / f"temp_seg_{job_id[:8]}_{i}.mp4"
+                success = extract_and_overlay_segment(
+                    video_path=Path(seg['video_path']),
+                    output_path=temp_path,
+                    start_time=seg['start'],
+                    end_time=seg['end'],
+                    title=seg['title'],
+                    artist=seg['artist'],
+                    language=seg.get('language')
+                )
+                if success and temp_path.exists():
+                    temp_segments.append(temp_path)
+            
+            if not temp_segments:
+                raise Exception("Failed to process any segments")
+            
+            # Concatenate all segments with crossfade transitions
+            export_jobs[job_id].update({
+                "current_step": "Creating crossfade transitions...",
+                "progress": 85
+            })
+            
+            # Use create_transition_concat for smooth audio blending and visible video transitions
+            # 3.5 second crossfades for music blending
+            success = create_transition_concat(
+                video_files=temp_segments, 
+                output_path=output_path, 
+                transition_type="random",
+                transition_duration=3.5
+            )
+            
+            # Cleanup temp files
+            for temp_path in temp_segments:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except:
+                    pass
+            
+            if not success or not output_path.exists():
+                raise Exception("Export failed - output file not created")
+            
+            # Add AI DJ Voice Commentary
+            export_jobs[job_id].update({
+                "current_step": "Adding AI DJ voice commentary...",
+                "progress": 92
+            })
+            
+            try:
+                from services.azure_dj_voice import add_creative_dj_commentary_to_video, DJContext
+                import tempfile
+                
+                # Build segment info for DJ timing
+                segment_info = []
+                cumulative_time = 4.0  # Start after intro
+                transition_dur = 3.5  # Match our transition duration
+                
+                for i, seg in enumerate(segments_for_export):
+                    seg_duration = seg['end'] - seg['start']
+                    segment_info.append({
+                        "song_title": seg['title'],
+                        "title": seg['title'],
+                        "artist": seg['artist'],
+                        "language": seg.get('language', 'English'),
+                        "video_start_time": cumulative_time,
+                        "segment_duration": seg_duration,
+                        "position": i
+                    })
+                    # Next segment starts after this, minus transition overlap
+                    cumulative_time += seg_duration - (transition_dur if i < len(segments_for_export) - 1 else 0)
+                
+                # Create DJ context from plan
+                dj_context = DJContext(
+                    theme=plan_theme,
+                    mood=plan_mood if isinstance(plan_mood, str) else ", ".join(plan_mood),
+                    audience="party guests ready to dance",
+                    special_notes="",
+                    custom_shoutouts=plan_shoutouts,
+                    original_prompt=""
+                )
+                
+                # Output to temp file, then replace
+                dj_output = output_path.parent / f"dj_{job_id[:8]}.mp4"
+                
+                print(f"[AI_EXPORT] Adding DJ voice with theme: {plan_theme}", flush=True)
+                print(f"[AI_EXPORT] Shoutouts: {plan_shoutouts}", flush=True)
+                
+                dj_success, dj_timeline = add_creative_dj_commentary_to_video(
+                    video_path=output_path,
+                    segments=segment_info,
+                    output_path=dj_output,
+                    context=dj_context,
+                    voice="energetic_male",
+                    frequency="moderate"
+                )
+                
+                if dj_success and dj_output.exists():
+                    # Replace original with DJ version
+                    import shutil
+                    shutil.move(str(dj_output), str(output_path))
+                    print(f"[AI_EXPORT] DJ voice added successfully!", flush=True)
+                else:
+                    print(f"[AI_EXPORT] DJ voice failed, keeping original video", flush=True)
+                    
+            except Exception as dj_error:
+                print(f"[AI_EXPORT] DJ voice error (continuing without DJ): {dj_error}", flush=True)
+                import traceback
+                traceback.print_exc()
+            
+            # Get file size
+            file_size = output_path.stat().st_size
+            
+            # Calculate total duration
+            total_duration = sum(
+                seg['end'] - seg['start'] 
+                for seg in segments_for_export
+            )
+            
+            # Mark complete with real results
             export_jobs[job_id].update({
                 "status": "complete",
                 "progress": 100,
                 "current_step": "Export complete!",
+                "output_path": str(output_path),
                 "result": {
                     "success": True,
-                    "output_path": f"cache/exports/ai_mix_{job_id[:8]}.mp4",
-                    "duration_seconds": plan.duration_minutes * 60 if plan.duration_minutes else 1800,
-                    "file_size_bytes": 50000000
+                    "output_path": str(output_path),
+                    "duration_seconds": total_duration,
+                    "file_size_bytes": file_size,
+                    "songs_processed": len(ordered_songs)
                 }
             })
+            
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             export_jobs[job_id].update({
                 "status": "failed",
+                "current_step": f"Error: {str(e)}",
                 "error": str(e)
             })
     
+    print(f"[APPROVE] Adding background task for job {job_id}")
+    print(f"[APPROVE] Songs in plan: {len(songs)}")
     background_tasks.add_task(run_ai_export)
+    print(f"[APPROVE] Background task added, returning response")
     
     return {
         "success": True,

@@ -202,8 +202,8 @@ export default function AIPlaylistPage() {
   };
 
   const handleDownload = () => {
-    if (exportProgress?.result?.output_path) {
-      window.open(`/exports/${exportProgress.result.output_path.split('/').pop()}`, '_blank');
+    if (jobId) {
+      window.open(`/api/export/jobs/${jobId}/download`, '_blank');
     }
   };
 

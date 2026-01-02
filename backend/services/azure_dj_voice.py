@@ -492,15 +492,28 @@ def generate_voice_clip(
 ) -> bool:
     """Generate voice clip using Azure OpenAI or fallback to edge-tts."""
     
+    log(f"[AZURE_DJ] Generating voice clip for: '{text[:60]}...' -> {output_path}")
+    
     # Try Azure OpenAI first
     if AZURE_OPENAI_AVAILABLE:
+        log("[AZURE_DJ] Attempting Azure OpenAI TTS...")
         success = generate_voice_clip_azure(text, output_path, voice)
         if success:
-            return True
-        log("[AZURE_DJ] Azure OpenAI TTS failed, trying fallback...")
+            log(f"[AZURE_DJ] Azure OpenAI TTS SUCCESS: {output_path}")
+            # Verify the file was created and has content
+            if output_path.exists() and output_path.stat().st_size > 1000:
+                log(f"[AZURE_DJ] File verified: {output_path.stat().st_size} bytes")
+                return True
+            else:
+                log(f"[AZURE_DJ] WARNING: File too small or missing: {output_path}")
+        else:
+            log("[AZURE_DJ] Azure OpenAI TTS failed, trying edge-tts fallback...")
+    else:
+        log("[AZURE_DJ] Azure OpenAI not available, using edge-tts...")
     
     # Fallback to edge-tts
     if EDGE_TTS_AVAILABLE:
+        log("[AZURE_DJ] Attempting edge-tts fallback...")
         edge_voice_map = {
             "energetic_male": "en-US-GuyNeural",
             "energetic_female": "en-US-AriaNeural",
@@ -509,9 +522,16 @@ def generate_voice_clip(
             "hype_male": "en-GB-RyanNeural",
         }
         voice_id = edge_voice_map.get(voice, "en-US-GuyNeural")
-        return generate_voice_clip_edge_tts(text, output_path, voice_id)
+        success = generate_voice_clip_edge_tts(text, output_path, voice_id)
+        if success:
+            log(f"[AZURE_DJ] edge-tts SUCCESS: {output_path}")
+            if output_path.exists() and output_path.stat().st_size > 1000:
+                return True
+        log("[AZURE_DJ] edge-tts also failed!")
+    else:
+        log("[AZURE_DJ] edge-tts not available!")
     
-    log("[AZURE_DJ] No TTS engine available!")
+    log("[AZURE_DJ] All TTS engines failed - no voice clip generated!")
     return False
 
 
@@ -743,27 +763,33 @@ def add_creative_dj_commentary_to_video(
         for clip in dj_clips:
             start = clip["start_time"]
             end = start + clip["duration"]
-            duck_expr_parts.append(f"between(t,{start},{end})")
+            # Add 0.5s fade-in/out buffer for smoother ducking
+            duck_expr_parts.append(f"between(t,{start - 0.3},{end + 0.3})")
         
-        # Music: duck to 35% during DJ (music still audible but DJ is clear)
+        # Music: duck to 20% during DJ (much quieter so DJ is clearly audible)
+        # Also apply a gentle limiter to prevent clipping
         if duck_expr_parts:
             duck_cond = '+'.join(duck_expr_parts)
-            filter_parts.append(f"[0:a]volume='if({duck_cond},0.35,1.0)':eval=frame[music]")
+            # Duck music to 20% (was 35%) and add slight compression for consistent levels
+            filter_parts.append(f"[0:a]volume='if({duck_cond},0.20,1.0)':eval=frame,alimiter=limit=0.95[music]")
         else:
             filter_parts.append("[0:a]anull[music]")
         
-        # Add each DJ clip - boost voice to be clear over ducked music
+        # Add each DJ clip - boost voice to be VERY clear over ducked music
+        # Apply normalization and boost to DJ clips
         mix_labels = ['[music]']
         for i, clip in enumerate(dj_clips):
             input_args.extend(['-i', clip["path"]])
             input_idx = i + 1
             delay_ms = int(clip["start_time"] * 1000)
-            filter_parts.append(f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume=2.0[dj{i}]")
+            # Boost DJ voice to 3.0x (was 2.0x), normalize, and add slight compression
+            filter_parts.append(f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume=3.0,alimiter=limit=0.95[dj{i}]")
             mix_labels.append(f'[dj{i}]')
         
-        # Final mix - balanced weights for music and DJ
+        # Final mix - heavily favor DJ voice
         num_inputs = len(mix_labels)
-        weights = '1 ' + ' '.join(['2.5'] * (num_inputs - 1))
+        # Music gets weight 1, each DJ clip gets weight 4 (was 2.5)
+        weights = '1 ' + ' '.join(['4'] * (num_inputs - 1))
         filter_parts.append(
             f"{''.join(mix_labels)}amix=inputs={num_inputs}:duration=first:dropout_transition=0:normalize=0:weights='{weights}'[aout]"
         )

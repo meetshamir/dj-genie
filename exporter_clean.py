@@ -3,7 +3,6 @@ Video DJ Playlist Exporter
 Handles video export with transitions, text overlays, intro/outro, and DJ voice.
 """
 
-import os
 import subprocess
 import tempfile
 import logging
@@ -15,34 +14,6 @@ from typing import List, Optional, Callable
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-
-
-def get_ffmpeg_path() -> str:
-    """Find FFmpeg executable path."""
-    # Try common Windows locations
-    candidates = [
-        Path.home() / "AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg.exe",
-        Path("C:/ffmpeg/bin/ffmpeg.exe"),
-        Path("C:/Program Files/ffmpeg/bin/ffmpeg.exe"),
-    ]
-    for path in candidates:
-        if path.exists():
-            return str(path)
-    # Fall back to PATH
-    return "ffmpeg"
-
-
-def get_ffprobe_path() -> str:
-    """Find FFprobe executable path."""
-    ffmpeg_path = get_ffmpeg_path()
-    return ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe") if ffmpeg_path.endswith(".exe") else "ffprobe"
-
-
-# Cache the paths
-FFMPEG = get_ffmpeg_path()
-FFPROBE = get_ffprobe_path()
-logger.info(f"FFmpeg path: {FFMPEG}")
-
 
 def log(msg: str):
     """Print with immediate flush for logging."""
@@ -99,7 +70,7 @@ def escape_ffmpeg_text(text: str) -> str:
 def get_video_dimensions(video_path: Path) -> tuple:
     """Get video width and height using ffprobe."""
     cmd = [
-        FFPROBE, '-v', 'error',
+        'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
         '-show_entries', 'stream=width,height',
         '-of', 'csv=p=0',
@@ -119,7 +90,7 @@ def get_video_dimensions(video_path: Path) -> tuple:
 def get_video_duration(video_path: Path) -> float:
     """Get video duration using ffprobe."""
     cmd = [
-        FFPROBE, '-v', 'error',
+        'ffprobe', '-v', 'error',
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         str(video_path)
@@ -201,7 +172,7 @@ def create_intro_clip(
     )
     
     cmd = [
-        FFMPEG, '-y',
+        'ffmpeg', '-y',
         '-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:d={duration}',
         '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
         '-filter_complex', filter_complex,
@@ -244,7 +215,7 @@ def create_outro_clip(
     )
     
     cmd = [
-        FFMPEG, '-y',
+        'ffmpeg', '-y',
         '-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:d={duration}',
         '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
         '-filter_complex', filter_complex,
@@ -323,7 +294,7 @@ def extract_and_overlay_segment(
     
     # Use -shortest to sync audio/video, and setpts/asetpts to reset timestamps
     cmd = [
-        FFMPEG, '-y',
+        'ffmpeg', '-y',
         '-ss', str(start_time),
         '-i', str(video_path),
         '-t', str(duration),
@@ -373,7 +344,7 @@ def simple_concat(video_files: List[Path], output_path: Path) -> bool:
             min_dur = min(v_dur, a_dur) if v_dur > 0 and a_dur > 0 else max(v_dur, a_dur)
             fixed_path = temp_dir / f"fixed_{i}.mp4"
             fix_cmd = [
-                FFMPEG, '-y', '-i', str(video_file),
+                'ffmpeg', '-y', '-i', str(video_file),
                 '-t', str(min_dur),
                 '-c:v', 'libx264', '-preset', 'fast',
                 '-c:a', 'aac', '-ar', '44100', '-ac', '2',
@@ -395,7 +366,7 @@ def simple_concat(video_files: List[Path], output_path: Path) -> bool:
     
     # Re-encode to ensure audio sync (not just copy)
     cmd = [
-        FFMPEG, '-y',
+        'ffmpeg', '-y',
         '-f', 'concat', '-safe', '0',
         '-i', concat_file,
         '-c:v', 'libx264', '-preset', 'fast',
@@ -433,7 +404,7 @@ def simple_concat(video_files: List[Path], output_path: Path) -> bool:
 def get_stream_durations(video_path: Path) -> tuple:
     """Get both video and audio stream durations separately."""
     cmd = [
-        FFPROBE, '-v', 'error',
+        'ffprobe', '-v', 'error',
         '-show_entries', 'stream=codec_type,duration',
         '-of', 'json',
         str(video_path)
@@ -461,9 +432,9 @@ def create_transition_pair(
     video2: Path,
     output_path: Path,
     transition_type: str = "fade",
-    transition_duration: float = 3.5
+    transition_duration: float = 1.0
 ) -> bool:
-    """Create a transition between two video clips with proper A/V sync and extended audio crossfade."""
+    """Create a transition between two video clips with proper A/V sync."""
     print(f"[TRANSITION] Creating transition between {video1.name} and {video2.name}")
     
     valid_transitions = [
@@ -490,49 +461,31 @@ def create_transition_pair(
     print(f"[TRANSITION] Video2: v={v2_video:.2f}s, a={v2_audio:.2f}s, using={dur2:.2f}s")
     logger.info(f"Transition {transition_type}: video1={dur1:.1f}s, video2={dur2:.1f}s")
     
-    # Allow longer transitions (up to 40% of shorter clip) for smooth blending
-    # Minimum 2s, maximum capped by available content
-    transition_duration = max(2.0, min(transition_duration, dur1 * 0.4, dur2 * 0.4))
+    # Ensure transition duration doesn't exceed available time
+    transition_duration = min(transition_duration, dur1 * 0.5, dur2 * 0.5)
     
     # Offset for xfade: when second video starts overlapping first
     offset = max(0, dur1 - transition_duration)
     
     print(f"[TRANSITION] Type: {transition_type}, Duration: {transition_duration:.2f}s, Offset: {offset:.2f}s")
     
-    # Use trim filters and proper audio mixing to keep A/V in sync
-    # The key is: video xfade uses an offset, but audio needs adelay to match
-    # 
-    # Timeline visualization:
-    # Video1: [========]
-    # Video2:      [========]  (starts at 'offset')
-    # xfade:       [==]        (transition_duration long)
-    #
-    # For audio, we need the same timing:
-    # Audio1: [========]       (plays until offset + transition)
-    # Audio2:      [========]  (starts at offset, faded in during transition)
-    
-    # Calculate the exact timing
-    # Audio 1 plays for (offset + transition_duration), then fades out during transition
-    # Audio 2 starts at 'offset' with delay, fades in during transition
-    
+    # Use trim filters to ensure both streams are the same length before transition
+    # This is crucial for A/V sync!
     filter_complex = (
-        # Trim and prepare video streams
+        # Trim video1 to its actual duration and reset timestamps
         f"[0:v]trim=0:{dur1},setpts=PTS-STARTPTS,fps=30[v0];"
-        f"[1:v]trim=0:{dur2},setpts=PTS-STARTPTS,fps=30[v1];"
-        # Trim and prepare audio streams
         f"[0:a]atrim=0:{dur1},asetpts=PTS-STARTPTS[a0];"
+        # Trim video2 to its actual duration and reset timestamps
+        f"[1:v]trim=0:{dur2},setpts=PTS-STARTPTS,fps=30[v1];"
         f"[1:a]atrim=0:{dur2},asetpts=PTS-STARTPTS[a1];"
         # Apply xfade transition to video
         f"[v0][v1]xfade=transition={transition_type}:duration={transition_duration}:offset={offset}[v];"
-        # For audio: delay second audio to start at offset, then mix with crossfade
-        # Fade out audio1 during the transition, fade in audio2
-        f"[a0]afade=t=out:st={offset}:d={transition_duration}[a0f];"
-        f"[a1]adelay={int(offset * 1000)}|{int(offset * 1000)},afade=t=in:st=0:d={transition_duration}[a1f];"
-        f"[a0f][a1f]amix=inputs=2:duration=longest:normalize=0[a]"
+        # Apply crossfade to audio with matching timing
+        f"[a0][a1]acrossfade=d={transition_duration}:o=0:c1=tri:c2=tri[a]"
     )
     
     cmd = [
-        FFMPEG, '-y',
+        'ffmpeg', '-y',
         '-i', str(video1),
         '-i', str(video2),
         '-filter_complex', filter_complex,
@@ -572,10 +525,10 @@ def create_transition_concat(
     video_files: List[Path],
     output_path: Path,
     transition_type: str = "random",
-    transition_duration: float = 3.5
+    transition_duration: float = 1.0
 ) -> bool:
-    """Concatenate multiple videos with extended crossfade transitions for smooth music blending."""
-    print(f"[TRANSITION_CONCAT] Starting with {len(video_files)} files, crossfade={transition_duration}s")
+    """Concatenate multiple videos with transitions."""
+    print(f"[TRANSITION_CONCAT] Starting with {len(video_files)} files")
     
     if len(video_files) == 0:
         print("[TRANSITION_CONCAT] No files provided!")
@@ -585,20 +538,11 @@ def create_transition_concat(
         shutil.copy(video_files[0], output_path)
         return True
     
-    # Use more visually prominent transitions
-    # These are the most visible and DJ-friendly transitions
     transitions = [
-        'fade',          # Classic fade - always works well
-        'dissolve',      # Smooth dissolve between clips
-        'fadeblack',     # Fade through black - very DJ-like
-        'fadewhite',     # Fade through white - energetic feel
-        'circlecrop',    # Circle transition - very noticeable
-        'circleopen',    # Circle opens to reveal next clip
-        'radial',        # Radial wipe - dynamic
-        'wipeleft',      # Horizontal wipe - professional
-        'wiperight',     # Horizontal wipe other direction
-        'smoothleft',    # Smooth horizontal transition
-        'smoothright',   # Smooth horizontal other way
+        'fade', 'fadeblack', 'wipeleft', 'slideright',
+        'circlecrop', 'dissolve', 'smoothleft', 'circleopen',
+        'radial', 'pixelize', 'slideleft', 'wipeup',
+        'slidedown', 'smoothdown'
     ]
     
     temp_dir = Path(tempfile.mkdtemp())
@@ -667,7 +611,7 @@ def create_transition_concat(
 def export_playlist(
     segments: List[ExportSegment],
     output_name: str = "dj_mix",
-    crossfade_duration: float = 3.5,
+    crossfade_duration: float = 1.5,
     transition_type: str = "random",
     add_text_overlay: bool = True,
     video_quality: str = "720p",
@@ -683,7 +627,7 @@ def export_playlist(
     Args:
         segments: List of ExportSegment objects
         output_name: Name for output file (without extension)
-        crossfade_duration: Duration of transitions in seconds (default 3.5s for smooth blending)
+        crossfade_duration: Duration of transitions in seconds
         transition_type: "random" or specific type like "fade", "dissolve", etc.
         add_text_overlay: Whether to add song title/artist overlay
         video_quality: "480p", "720p", or "1080p"

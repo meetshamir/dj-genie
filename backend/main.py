@@ -4,8 +4,20 @@ Video DJ Playlist Creator - Backend Server
 FastAPI application for discovering, analyzing, and exporting video playlists.
 """
 
+import os
 import sys
 from pathlib import Path
+
+# Add FFmpeg to PATH (WinGet installation location)
+ffmpeg_paths = [
+    Path.home() / "AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin",
+    Path("C:/ffmpeg/bin"),
+    Path("C:/Program Files/ffmpeg/bin"),
+]
+for ffmpeg_path in ffmpeg_paths:
+    if ffmpeg_path.exists():
+        os.environ["PATH"] = str(ffmpeg_path) + os.pathsep + os.environ.get("PATH", "")
+        break
 
 # Add backend directory to path for imports
 backend_dir = Path(__file__).parent
@@ -14,6 +26,7 @@ sys.path.insert(0, str(backend_dir))
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import asyncio
 
@@ -64,6 +77,11 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router, prefix="/api")
+
+# Mount static files for exports
+exports_dir = settings.base_dir / "exports"
+exports_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/exports", StaticFiles(directory=str(exports_dir)), name="exports")
 
 
 # WebSocket endpoint at root level (not under /api prefix)
