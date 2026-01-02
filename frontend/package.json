@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "hls.js": "^1.5.7"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

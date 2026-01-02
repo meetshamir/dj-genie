@@ -9,9 +9,12 @@ import logging
 import shutil
 import datetime
 import sys
+import re
+import json
+import asyncio
 from pathlib import Path
-from typing import List, Optional, Callable
-from dataclasses import dataclass
+from typing import List, Optional, Callable, AsyncGenerator, Tuple
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,43 @@ class ExportResult:
     duration_seconds: float = 0
     file_size_bytes: int = 0
     error: Optional[str] = None
+
+
+@dataclass
+class ExportJob:
+    """Tracks an export job with real-time progress."""
+    job_id: str
+    status: str = "pending"  # pending, downloading, processing, encoding, complete, failed, cancelled
+    progress: float = 0.0
+    current_step: str = ""
+    segment_index: int = 0
+    total_segments: int = 0
+    eta_seconds: float = 0
+    hls_segments_ready: int = 0
+    hls_playlist_path: Optional[str] = None
+    output_path: Optional[str] = None
+    error: Optional[str] = None
+    cancelled: bool = False
+    start_time: float = field(default_factory=lambda: __import__('time').time())
+
+
+# Global job registry for WebSocket updates
+_export_jobs: dict[str, ExportJob] = {}
+
+
+def get_export_job(job_id: str) -> Optional[ExportJob]:
+    """Get export job by ID."""
+    return _export_jobs.get(job_id)
+
+
+def cancel_export_job(job_id: str) -> bool:
+    """Cancel an export job."""
+    job = _export_jobs.get(job_id)
+    if job and job.status not in ("complete", "failed"):
+        job.cancelled = True
+        job.status = "cancelled"
+        return True
+    return False
 
 
 def escape_ffmpeg_text(text: str) -> str:
@@ -412,7 +452,7 @@ def get_stream_durations(video_path: Path) -> tuple:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            import json
+            # json is already imported at top of file
             data = json.loads(result.stdout)
             video_dur = 0
             audio_dur = 0
@@ -914,3 +954,328 @@ def export_playlist(
         logger.error(f"Export failed: {e}")
         shutil.rmtree(temp_dir, ignore_errors=True)
         return ExportResult(success=False, error=str(e))
+
+
+async def run_ffmpeg_with_progress(
+    cmd: List[str],
+    total_duration: float,
+    job: Optional[ExportJob] = None,
+    progress_callback: Optional[Callable[[float], None]] = None
+) -> Tuple[bool, str]:
+    """Run FFmpeg command with real-time progress parsing."""
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    
+    stderr_output = []
+    
+    async def read_stderr():
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            line_str = line.decode('utf-8', errors='ignore')
+            stderr_output.append(line_str)
+            
+            # Check for cancellation
+            if job and job.cancelled:
+                process.terminate()
+                return
+            
+            # Parse progress
+            progress = parse_ffmpeg_progress(line_str, total_duration)
+            if progress is not None:
+                if job:
+                    job.progress = progress
+                    # Calculate ETA
+                    elapsed = __import__('time').time() - job.start_time
+                    if progress > 0:
+                        job.eta_seconds = (elapsed / progress) * (100 - progress)
+                if progress_callback:
+                    progress_callback(progress)
+    
+    await read_stderr()
+    await process.wait()
+    
+    return process.returncode == 0, ''.join(stderr_output)
+
+
+def parse_ffmpeg_progress(line: str, total_duration: float) -> Optional[float]:
+    """Parse FFmpeg stderr for progress percentage."""
+    # Match time=HH:MM:SS.ms or time=SS.ms
+    match = re.search(r'time=(\d+):(\d+):(\d+)\.(\d+)', line)
+    if match:
+        hours, mins, secs, ms = map(int, match.groups())
+        current_time = hours * 3600 + mins * 60 + secs + ms / 100
+        if total_duration > 0:
+            return min(100.0, (current_time / total_duration) * 100)
+    
+    # Also try simpler format time=SS.ms
+    match = re.search(r'time=(\d+\.?\d*)', line)
+    if match:
+        current_time = float(match.group(1))
+        if total_duration > 0:
+            return min(100.0, (current_time / total_duration) * 100)
+    
+    return None
+
+
+def create_hls_output(
+    input_path: Path,
+    output_dir: Path,
+    job: Optional[ExportJob] = None
+) -> bool:
+    """Create HLS segments for preview streaming."""
+    playlist_path = output_dir / "playlist.m3u8"
+    segment_pattern = output_dir / "segment_%03d.ts"
+    
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(input_path),
+        '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-c:a', 'aac',
+        '-f', 'hls',
+        '-hls_time', '4',
+        '-hls_list_size', '0',
+        '-hls_flags', 'append_list+independent_segments',
+        '-hls_segment_filename', str(segment_pattern),
+        str(playlist_path)
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and job:
+            job.hls_playlist_path = str(playlist_path)
+            # Count segments
+            job.hls_segments_ready = len(list(output_dir.glob("segment_*.ts")))
+        return result.returncode == 0
+    except Exception as e:
+        logger.error(f"HLS creation failed: {e}")
+        return False
+
+
+def encode_final_hq(
+    input_path: Path,
+    output_path: Path,
+    quality: str = "1080p",
+    job: Optional[ExportJob] = None
+) -> bool:
+    """Encode final high-quality MP4 with optimal settings."""
+    resolution_map = {
+        "480p": "854:480",
+        "720p": "1280:720",
+        "1080p": "1920:1080"
+    }
+    scale = resolution_map.get(quality, "1920:1080")
+    
+    # Get duration for progress tracking
+    duration = get_video_duration(input_path)
+    
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(input_path),
+        '-vf', f'scale={scale}:force_original_aspect_ratio=decrease,pad={scale.replace(":", ":")}:(ow-iw)/2:(oh-ih)/2',
+        '-c:v', 'libx264',
+        '-preset', 'slow',
+        '-crf', '18',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-movflags', '+faststart',
+        '-r', '30',
+        str(output_path)
+    ]
+    
+    try:
+        if job:
+            job.status = "encoding"
+            job.current_step = f"Encoding final {quality} output..."
+        
+        # Run with progress (sync version for now)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            if job:
+                job.progress = 100
+                job.output_path = str(output_path)
+            return True
+        else:
+            logger.error(f"Final encode failed: {result.stderr[:500]}")
+            return False
+    except Exception as e:
+        logger.error(f"Final encode exception: {e}")
+        return False
+
+
+async def export_playlist_async(
+    segments: List[ExportSegment],
+    job_id: str,
+    output_name: str = "dj_mix",
+    crossfade_duration: float = 1.5,
+    transition_type: str = "random",
+    add_text_overlay: bool = True,
+    video_quality: str = "1080p",
+    dj_enabled: bool = False,
+    dj_voice: str = "energetic_male",
+    dj_frequency: str = "moderate",
+    dj_context: dict = None,
+    enable_hls_preview: bool = True,
+) -> ExportResult:
+    """
+    Async export with real-time progress via WebSocket.
+    Creates HLS preview during processing and final HQ MP4.
+    """
+    # Create job tracker
+    job = ExportJob(
+        job_id=job_id,
+        total_segments=len(segments),
+        status="pending"
+    )
+    _export_jobs[job_id] = job
+    
+    if not segments:
+        job.status = "failed"
+        job.error = "No segments to export"
+        return ExportResult(success=False, error="No segments to export")
+    _export_jobs[job_id] = job# Setup paths
+    rt settings
+    if not segments:mkdtemp())
+        job.status = "failed"
+        job.error = "No segments to export"
+        return ExportResult(success=False, error="No segments to export")
+    p_dir / "hls"
+    # Setup paths exist_ok=True)
+    from config import settings
+    temp_dir = Path(tempfile.mkdtemp())ports"
+    download_dir = temp_dir / "downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    aths
+    hls_dir = temp_dir / "hls"ame}_intermediate.mp4"
+    hls_dir.mkdir(parents=True, exist_ok=True)output_path = exports_dir / f"{output_name}.mp4"
+    
+    exports_dir = settings.base_dir / "exports"(1280, 720), "1080p": (1920, 1080)}
+    exports_dir.mkdir(parents=True, exist_ok=True)width, height = resolution_map.get(video_quality, (1920, 1080))
+    
+    # Intermediate and final paths
+    intermediate_path = temp_dir / f"{output_name}_intermediate.mp4"
+    output_path = exports_dir / f"{output_name}.mp4"try:
+    
+    resolution_map = {"480p": (854, 480), "720p": (1280, 720), "1080p": (1920, 1080)}
+    width, height = resolution_map.get(video_quality, (1920, 1080))    job.current_step = "Creating intro..."
+     5
+    segment_files = []    
+    intro_path = temp_dir / "intro.mp4"
+    try:ntro_path, "DJ MIX", 4.0, width, height):
+        # Step 1: Create introintro_path)
+        job.status = "processing"
+        job.current_step = "Creating intro...":
+        job.progress = 5    raise Exception("Export cancelled")
+        
+        intro_path = temp_dir / "intro.mp4"
+        if create_intro_clip(intro_path, "DJ MIX", 4.0, width, height):):
+            segment_files.append(intro_path)    if job.cancelled:
+        eption("Export cancelled")
+        if job.cancelled:
+            raise Exception("Export cancelled")    job.segment_index = i
+        ts)) * 60
+        # Step 2: Download and process segmentsegment {i+1}/{len(segments)}..."
+        for i, segment in enumerate(segments):nloading"
+            if job.cancelled:
+                raise Exception("Export cancelled")# Use source_path if available
+            source_path') and segment.source_path and Path(segment.source_path).exists():
+            job.segment_index = i
+            job.progress = 10 + (i / len(segments)) * 60
+            job.current_step = f"Downloading segment {i+1}/{len(segments)}..."video(segment.youtube_id, download_dir, video_quality)
+            job.status = "downloading"
+            
+            # Use source_path if available
+            if hasattr(segment, 'source_path') and segment.source_path and Path(segment.source_path).exists():
+                video_path = Path(segment.source_path)
+            else:
+                video_path = download_video(segment.youtube_id, download_dir, video_quality)job.current_step = f"Processing segment {i+1}/{len(segments)}..."
+            
+            if not video_path:
+                logger.warning(f"Skipping segment {i}: download failed")tract_and_overlay_segment(
+                continue    video_path, processed_path,
+            egment.end_time,
+            job.status = "processing"
+            job.current_step = f"Processing segment {i+1}/{len(segments)}..."    segment.language, add_text_overlay,
+            
+            processed_path = temp_dir / f"segment_{i:03d}.mp4"
+            success = extract_and_overlay_segment(
+                video_path, processed_path,
+                segment.start_time, segment.end_time,)
+                segment.song_title, segment.artist,
+                segment.language, add_text_overlay, <= 1:
+                width, heightaise Exception("No segments were successfully processed")
+            )
+            e outro
+            if success:
+                segment_files.append(processed_path)job.progress = 72
+        tro.mp4"
+        if len(segment_files) <= 1: width, height):
+            raise Exception("No segments were successfully processed")    segment_files.append(outro_path)
+        
+        # Step 3: Create outro
+        job.current_step = "Creating outro..."= "Creating transitions..."
+        job.progress = 72
+        outro_path = temp_dir / "outro.mp4"
+        if create_outro_clip(outro_path, "Thanks for listening!", 3.0, width, height):gment_files) > 1:
+            segment_files.append(outro_path)    success = create_transition_concat(
+        th,
+        # Step 4: Concatenate with transitions
+        job.current_step = "Creating transitions..."
+        job.progress = 75else:
+        te_path)
+        if crossfade_duration > 0 and len(segment_files) > 1:
+            success = create_transition_concat(
+                segment_files, intermediate_path,segments")
+                transition_type, crossfade_duration
+            )p 5: Generate HLS preview (parallel with final encode)
+        else:
+            success = simple_concat(segment_files, intermediate_path)    job.current_step = "Generating preview stream..."
+        s = 80
+        if not success:)
+            raise Exception("Failed to concatenate segments")
+        
+        # Step 5: Generate HLS preview (parallel with final encode)
+        if enable_hls_preview:
+            job.current_step = "Generating preview stream..."= "Adding AI DJ commentary..."
+            job.progress = 80
+            create_hls_output(intermediate_path, hls_dir, job)    # ... existing DJ voice code ...
+        
+        # Step 6: Add DJ voice if enabledHQ encode
+        dj_timeline = []ep = f"Encoding final {video_quality} output..."
+        if dj_enabled:
+            job.current_step = "Adding AI DJ commentary..."
+            job.progress = 85
+            # ... existing DJ voice code ...encode_success = encode_final_hq(intermediate_path, output_path, video_quality, job)
+        
+        # Step 7: Final HQ encode
+        job.current_step = f"Encoding final {video_quality} output..."nal encoding failed")
+        job.status = "encoding"
+        job.progress = 90# Complete
+        
+        encode_success = encode_final_hq(intermediate_path, output_path, video_quality, job)job.progress = 100
+        output_path)
+        if not encode_success:
+            raise Exception("Final encoding failed")duration = get_video_duration(output_path)
+        = output_path.stat().st_size if output_path.exists() else 0
+        # Complete
+        job.status = "complete"_dir, ignore_errors=True)
+        job.progress = 100
+        job.output_path = str(output_path)return ExportResult(
+        
+        duration = get_video_duration(output_path)
+        file_size = output_path.stat().st_size if output_path.exists() else 0    duration_seconds=duration,
+        
+        shutil.rmtree(temp_dir, ignore_errors=True))
+        
+        return ExportResult(:
+            success=True,cancelled else "cancelled"
+            output_path=str(output_path),
+            duration_seconds=duration,ailed: {e}")
+            file_size_bytes=file_sizehutil.rmtree(temp_dir, ignore_errors=True)
+        )return ExportResult(success=False, error=str(e))
+            except Exception as e:        job.status = "failed" if not job.cancelled else "cancelled"        job.error = str(e)        logger.error(f"Async export failed: {e}")        shutil.rmtree(temp_dir, ignore_errors=True)        return ExportResult(success=False, error=str(e))

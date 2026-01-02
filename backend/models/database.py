@@ -129,6 +129,27 @@ class ExportJob(Base):
     )
 
 
+class AIPlaylistPlan(Base):
+    """AI-generated playlist plan from chat conversation."""
+    __tablename__ = "ai_playlist_plans"
+
+    id = Column(String, primary_key=True)  # UUID
+    session_id = Column(String, unique=True, index=True, nullable=False)
+    user_prompt = Column(Text, nullable=True)
+    theme = Column(String, nullable=True)
+    mood = Column(Text, nullable=True)  # JSON array stored as text
+    songs = Column(Text, nullable=True)  # JSON array of song objects
+    commentary_samples = Column(Text, nullable=True)  # JSON array
+    cultural_phrases = Column(Text, nullable=True)  # JSON array
+    shoutouts = Column(Text, nullable=True)  # JSON array
+    languages = Column(Text, nullable=True)  # JSON array
+    duration_minutes = Column(Integer, default=30)
+    status = Column(String, default="draft")  # draft, approved, generating, complete, failed
+    conversation_history = Column(Text, nullable=True)  # JSON array of messages
+    export_job_id = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+
 class Database:
     """Database connection manager."""
     

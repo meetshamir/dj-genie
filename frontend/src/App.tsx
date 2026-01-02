@@ -278,6 +278,15 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>Video DJ Playlist</h1>
+        <a href="#/ai-dj" className="btn btn-primary" style={{ marginLeft: "auto", textDecoration: "none" }}>
+          ✨ AI DJ Studio
+        </a>
+        <a href="#/ai-dj" className="btn btn-primary" style={{ marginLeft: "auto", textDecoration: "none" }}>
+          ✨ AI DJ Studio
+        </a>
+        <a href="#/ai-dj" className="btn btn-primary" style={{ marginLeft: "auto", textDecoration: "none" }}>
+          ✨ AI DJ Studio
+        </a>
         <div className="header-stats">
           <span>
             <strong>{segments.length}</strong> segments

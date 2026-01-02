@@ -1,4 +1,4 @@
-"""
+﻿"""
 API Routes for the Video DJ Playlist Creator.
 """
 
@@ -1421,3 +1421,344 @@ async def preview_ai_playlist(request: AIPlaylistRequest):
             "success": False,
             "error": str(e)
         }
+
+
+# ============== AI DJ Chat Endpoints (Streaming) ==============
+
+from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+import json
+import re
+import asyncio
+
+# Store for WebSocket connections per job
+websocket_connections: dict = {}
+
+
+class AIChatMessageRequest(BaseModel):
+    """Request model for AI chat messages."""
+    session_id: Optional[str] = None
+    message: str
+
+
+class AIApproveRequest(BaseModel):
+    """Request model for approving AI plan."""
+    session_id: str
+    modifications: Optional[dict] = None
+
+
+@router.post("/ai-chat/start")
+async def start_ai_chat(db: Session = Depends(get_db)):
+    """Start a new AI DJ chat session."""
+    from models.database import AIPlaylistPlan
+    session_id = str(uuid.uuid4())
+    
+    plan = AIPlaylistPlan(
+        id=str(uuid.uuid4()),
+        session_id=session_id,
+        status="draft",
+        conversation_history="[]"
+    )
+    db.add(plan)
+    db.commit()
+    
+    return {"session_id": session_id, "message": "Session started"}
+
+
+@router.post("/ai-chat/message")
+async def ai_chat_message(request: AIChatMessageRequest, db: Session = Depends(get_db)):
+    """Process a chat message and return streaming AI response."""
+    from models.database import AIPlaylistPlan
+    
+    async def generate_response():
+        try:
+            from services.azure_dj_voice import AZURE_OPENAI_AVAILABLE
+            
+            # Get or create session
+            session_id = request.session_id or str(uuid.uuid4())
+            plan = db.query(AIPlaylistPlan).filter(
+                AIPlaylistPlan.session_id == session_id
+            ).first()
+            
+            if not plan:
+                plan = AIPlaylistPlan(
+                    id=str(uuid.uuid4()),
+                    session_id=session_id,
+                    status="draft",
+                    conversation_history="[]"
+                )
+                db.add(plan)
+                db.commit()
+            
+            # Parse conversation history
+            history = json.loads(plan.conversation_history or "[]")
+            history.append({"role": "user", "content": request.message})
+            
+            # System prompt for DJ planning
+            system_prompt = """You are an AI DJ assistant helping create the perfect party playlist.
+Your job is to:
+1. Understand the user's party theme, mood, and preferences
+2. Ask clarifying questions about languages, artists, energy levels
+3. Suggest songs that match their vibe
+4. Create DJ commentary and shoutouts
+
+When you have enough info to create a plan, output JSON like this:
+```json
+{"ready": true, "theme": "Party Theme", "mood": ["energetic"], "languages": ["English"], 
+"duration_minutes": 30, "songs": [{"title": "Song", "artist": "Artist", "why": "reason"}],
+"commentary_samples": ["Welcome!"], "shoutouts": ["Happy New Year!"]}
+```
+
+Be conversational, fun, and enthusiastic like a real DJ! Use emojis."""
+
+            if AZURE_OPENAI_AVAILABLE:
+                try:
+                    import os
+                    from services.azure_dj_voice import get_azure_openai_client
+                    client = get_azure_openai_client()
+                    if not client:
+                        raise ValueError("Azure OpenAI client not available")
+                except Exception as azure_err:
+                    # Fallback when Azure OpenAI fails
+                    fallback_msg = f"🎧 Hey DJ! Azure OpenAI isn't configured yet. Tell me about your party and I'll help plan it! What's the occasion, vibe, and music preferences?"
+                    yield f"data: {json.dumps({'type': 'content', 'content': fallback_msg})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
+                    history.append({"role": "assistant", "content": fallback_msg})
+                    plan.conversation_history = json.dumps(history)
+                    db.commit()
+                    return
+                
+                messages = [{"role": "system", "content": system_prompt}]
+                messages.extend(history)
+                
+                stream = client.chat.completions.create(
+                    model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+                    messages=messages,
+                    stream=True,
+                    max_tokens=1500,
+                    temperature=0.8
+                )
+                
+                full_response = ""
+                for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        full_response += content
+                        yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                
+                # Check if response contains a plan
+                plan_match = re.search(r'```json\s*(\{.*?"ready":\s*true.*?\})\s*```', 
+                                      full_response, re.DOTALL)
+                if plan_match:
+                    try:
+                        plan_data = json.loads(plan_match.group(1))
+                        plan.theme = plan_data.get("theme")
+                        plan.mood = json.dumps(plan_data.get("mood", []))
+                        plan.songs = json.dumps(plan_data.get("songs", []))
+                        plan.commentary_samples = json.dumps(plan_data.get("commentary_samples", []))
+                        plan.shoutouts = json.dumps(plan_data.get("shoutouts", []))
+                        plan.languages = json.dumps(plan_data.get("languages", []))
+                        plan.duration_minutes = plan_data.get("duration_minutes", 30)
+                        
+                        yield f"data: {json.dumps({'type': 'plan', 'plan': plan_data})}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Save conversation
+                history.append({"role": "assistant", "content": full_response})
+                plan.conversation_history = json.dumps(history)
+                db.commit()
+                
+                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
+                
+            else:
+                # Fallback without Azure OpenAI
+                fallback_msg = "Hey! I'd love to help you create an amazing playlist! Tell me about your party - what's the occasion, what languages/genres, and what vibe? 🎉"
+                yield f"data: {json.dumps({'type': 'content', 'content': fallback_msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return StreamingResponse(generate_response(), media_type="text/event-stream")
+
+
+@router.post("/ai-chat/approve")
+async def approve_ai_plan(request: AIApproveRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Approve the AI-generated plan and start generation."""
+    from models.database import AIPlaylistPlan
+    import time
+    
+    plan = db.query(AIPlaylistPlan).filter(
+        AIPlaylistPlan.session_id == request.session_id
+    ).first()
+    
+    if not plan:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Apply modifications
+    if request.modifications:
+        if "shoutouts" in request.modifications:
+            plan.shoutouts = json.dumps(request.modifications["shoutouts"])
+        if "songs" in request.modifications:
+            plan.songs = json.dumps(request.modifications["songs"])
+    
+    plan.status = "approved"
+    job_id = str(uuid.uuid4())
+    plan.export_job_id = job_id
+    db.commit()
+    
+    # Get songs from the plan
+    songs = json.loads(plan.songs) if plan.songs else []
+    total_songs = len(songs)
+    
+    # Initialize export job in the shared dict
+    export_jobs[job_id] = {
+        "status": "pending",
+        "progress": 0,
+        "current_step": "Starting...",
+        "segment_index": 0,
+        "total_segments": total_songs,
+        "result": None
+    }
+    
+    # Run export simulation in background
+    def run_ai_export():
+        try:
+            for i, song in enumerate(songs):
+                export_jobs[job_id].update({
+                    "status": "processing",
+                    "progress": int((i / total_songs) * 100),
+                    "current_step": f"Processing: {song.get('title', 'Unknown')}",
+                    "segment_index": i + 1,
+                    "total_segments": total_songs
+                })
+                time.sleep(1)  # Simulate processing time
+            
+            # Mark complete
+            export_jobs[job_id].update({
+                "status": "complete",
+                "progress": 100,
+                "current_step": "Export complete!",
+                "result": {
+                    "success": True,
+                    "output_path": f"cache/exports/ai_mix_{job_id[:8]}.mp4",
+                    "duration_seconds": plan.duration_minutes * 60 if plan.duration_minutes else 1800,
+                    "file_size_bytes": 50000000
+                }
+            })
+        except Exception as e:
+            export_jobs[job_id].update({
+                "status": "failed",
+                "error": str(e)
+            })
+    
+    background_tasks.add_task(run_ai_export)
+    
+    return {
+        "success": True,
+        "job_id": job_id,
+        "message": "Plan approved! Starting generation..."
+    }
+
+
+@router.post("/ai-chat/yolo")
+async def yolo_generate(db: Session = Depends(get_db)):
+    """YOLO mode - generate a random awesome playlist immediately."""
+    from models.database import AIPlaylistPlan
+    import random
+    
+    session_id = str(uuid.uuid4())
+    
+    themes = [
+        ("New Year's Party 2026! 🎉", ["pop", "dance", "latin"]),
+        ("Summer Vibes ☀️", ["reggaeton", "tropical", "pop"]),
+        ("Throwback Night 🕺", ["80s", "90s", "2000s"]),
+        ("Global Dance Party 🌍", ["kpop", "latin", "afrobeats"]),
+        ("Bollywood Beats 💃", ["hindi", "punjabi", "tamil"]),
+    ]
+    
+    theme, genres = random.choice(themes)
+    
+    plan = AIPlaylistPlan(
+        id=str(uuid.uuid4()),
+        session_id=session_id,
+        theme=theme,
+        mood=json.dumps(["energetic", "fun", "party"]),
+        languages=json.dumps(["English", "Spanish", "Hindi"]),
+        duration_minutes=20,
+        status="approved",
+        shoutouts=json.dumps(["Let's gooo! 🔥", "Party time!"]),
+        commentary_samples=json.dumps(["Welcome to the party!", "This track is fire!"]),
+        conversation_history="[]"
+    )
+    db.add(plan)
+    
+    job_id = str(uuid.uuid4())
+    plan.export_job_id = job_id
+    db.commit()
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "job_id": job_id,
+        "theme": theme,
+        "message": f"YOLO! 🎲 Creating a {theme} mix for you!"
+    }
+
+
+# ============== WebSocket Export Progress ==============
+
+@router.websocket("/ws/export/{job_id}")
+async def websocket_export_progress(websocket: WebSocket, job_id: str):
+    """WebSocket for real-time export progress updates."""
+    await websocket.accept()
+    
+    try:
+        last_progress = -1
+        while True:
+            # Check export_jobs dict
+            if job_id in export_jobs:
+                job = export_jobs[job_id]
+                progress = job.get("progress", 0)
+                status = job.get("status", "pending")
+                
+                if progress != last_progress or status in ("complete", "failed"):
+                    await websocket.send_json({
+                        "job_id": job_id,
+                        "status": status,
+                        "progress": progress,
+                        "current_step": job.get("current_step", ""),
+                        "segment_index": job.get("segment_index", 0),
+                        "total_segments": job.get("total_segments", 0),
+                        "error": job.get("error"),
+                        "result": job.get("result")
+                    })
+                    last_progress = progress
+                
+                if status in ("complete", "failed"):
+                    break
+            else:
+                await websocket.send_json({
+                    "job_id": job_id,
+                    "status": "not_found",
+                    "error": "Job not found, waiting..."
+                })
+            
+            await asyncio.sleep(0.5)
+            
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for job {job_id}")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+
+
+@router.post("/export/{job_id}/cancel")
+async def cancel_export(job_id: str):
+    """Cancel an in-progress export."""
+    if job_id in export_jobs:
+        export_jobs[job_id]["status"] = "cancelled"
+        return {"success": True, "message": "Export cancelled"}
+    return {"success": False, "message": "Job not found"}

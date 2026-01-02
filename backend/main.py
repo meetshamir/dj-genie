@@ -12,13 +12,14 @@ backend_dir = Path(__file__).parent
 sys.path.insert(0, str(backend_dir))
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import asyncio
 
 from config import settings
 from models.database import init_database
-from api.routes import router
+from api.routes import router, export_jobs
 
 
 @asynccontextmanager
@@ -63,6 +64,51 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router, prefix="/api")
+
+
+# WebSocket endpoint at root level (not under /api prefix)
+@app.websocket("/ws/export/{job_id}")
+async def websocket_export_progress(websocket: WebSocket, job_id: str):
+    """WebSocket for real-time export progress updates."""
+    await websocket.accept()
+    
+    try:
+        last_progress = -1
+        while True:
+            # Check export_jobs dict from routes
+            if job_id in export_jobs:
+                job = export_jobs[job_id]
+                progress = job.get("progress", 0)
+                status = job.get("status", "pending")
+                
+                if progress != last_progress or status in ("complete", "failed"):
+                    await websocket.send_json({
+                        "job_id": job_id,
+                        "status": status,
+                        "progress": progress,
+                        "current_step": job.get("current_step", ""),
+                        "segment_index": job.get("segment_index", 0),
+                        "total_segments": job.get("total_segments", 0),
+                        "error": job.get("error"),
+                        "result": job.get("result")
+                    })
+                    last_progress = progress
+                
+                if status in ("complete", "failed"):
+                    break
+            else:
+                await websocket.send_json({
+                    "job_id": job_id,
+                    "status": "not_found",
+                    "error": "Job not found, waiting..."
+                })
+            
+            await asyncio.sleep(0.5)
+            
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for job {job_id}")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
 
 
 @app.get("/")

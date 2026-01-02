@@ -1,32 +1,33 @@
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
+*.pyc
+*.pyo
 .venv/
 venv/
-**/venv/
-backend/venv/
-ENV/
-env/
-.eggs/
 *.egg-info/
-*.egg
 
 # Node
 node_modules/
-**/node_modules/
 dist/
-build/
-.npm
-*.tsbuildinfo
+
+# Exports & Media
+exports/
+downloads/
+cache/
+
+# Database
+*.sqlite
+*.db
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
+
+# Temp fix scripts
+fix_*.py
+check_*.py
+test_*.py
+exporter_backup.py
 
 # OS
 .DS_Store
@@ -34,37 +35,3 @@ Thumbs.db
 
 # Logs
 *.log
-server.log
-server_out.log
-server_err.log
-
-# Database
-*.sqlite
-*.db
-database.sqlite
-
-# Temp files
-*.tmp
-*.temp
-temp/
-tmp/
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# Build outputs
-exports/
-downloads/
-
-# Cache
-.cache/
-cache/
-
-# Backup files
-*_backup.py
-
-# Media exports
-*.mp4
-*.mp3
