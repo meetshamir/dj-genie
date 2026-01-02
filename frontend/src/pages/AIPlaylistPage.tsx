@@ -213,10 +213,9 @@ export default function AIPlaylistPage() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', borderRight: '1px solid #374151' }}>
         <div style={{ padding: '1rem', borderBottom: '1px solid #374151' }}>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            ✨ AI DJ Studio
+            🧞‍♂️ DJ Genie
           </h1>
-          <p style={{ color: '#9CA3AF', fontSize: '0.875rem' }}>Tell me about your party and I'll create the perfect mix</p>
-          <a href="/" style={{ color: '#A78BFA', fontSize: '0.875rem' }}>← Back to main app</a>
+          <p style={{ color: '#9CA3AF', fontSize: '0.875rem' }}>Describe Your Vibe. We'll Drop the Beat.</p>
         </div>
 
         {/* Messages */}

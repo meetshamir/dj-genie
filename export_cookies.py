@@ -1,16 +1,12 @@
 #!/usr/bin/env python
 """
-Manual YouTube Cookie Exporter
+YouTube Cookie Exporter for DJ Genie
 
-This script opens a browser window where you can:
-1. Log into YouTube if needed
-2. The cookies will be automatically exported
-
-Run this script and log into your Google account when prompted.
+This script exports YouTube cookies from your browser for yt-dlp authentication.
+Run this if video downloads are failing due to YouTube authentication issues.
 """
 import os
 import sys
-import http.cookiejar
 from pathlib import Path
 
 # Try to use browser_cookie3 which has better Windows support
@@ -27,7 +23,9 @@ except ImportError:
     except:
         HAS_BC3 = False
 
-COOKIES_PATH = Path(r"c:\Users\saziz\video-dj-playlist\cache\youtube_cookies.txt")
+# Use relative path from script location
+SCRIPT_DIR = Path(__file__).parent
+COOKIES_PATH = SCRIPT_DIR / "cache" / "youtube_cookies.txt"
 
 def export_cookies_bc3():
     """Try to export cookies using browser_cookie3"""
@@ -91,7 +89,7 @@ Since automatic extraction failed, you need to manually export cookies:
 """)
 
 if __name__ == "__main__":
-    print("YouTube Cookie Exporter for AI DJ Studio")
+    print("🧞‍♂️ DJ Genie - YouTube Cookie Exporter")
     print("="*50)
     
     COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)

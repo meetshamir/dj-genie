@@ -1,6 +1,8 @@
-# 🎧 Video DJ Playlist Creator
+# 🧞‍♂️ DJ Genie - your AI Video Jockey!
 
-> **An AI-powered video mixing application that creates professional DJ-style party mixes with smooth transitions, beat-aligned cuts, and AI-generated commentary.**
+> **"Describe Your Vibe. We'll Drop the Beat."**
+>
+> An AI-powered YouTube video mixing application that creates professional DJ-style party mixes with smooth transitions, beat-aligned cuts, and AI-generated commentary.
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
 ![React](https://img.shields.io/badge/React-18-61dafb.svg)
@@ -37,8 +39,8 @@ This application is designed to showcase what's possible with modern AI technolo
 
 ## ✨ Features
 
-### 🤖 AI DJ Studio
-Chat with an AI DJ to create your perfect party mix! Just describe your event, and the AI will:
+### �‍♂️ AI-Powered Wish Granting
+Just tell DJ Genie about your party and watch the magic happen! Describe your event, and the AI will:
 - Suggest songs based on your theme, mood, and preferences
 - Create a cohesive playlist with the right energy flow
 - Generate creative DJ commentary for your mix
@@ -89,8 +91,8 @@ Using **librosa** for audio analysis:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/video-dj-playlist.git
-   cd video-dj-playlist
+   git clone https://github.com/yourusername/dj-genie.git
+   cd dj-genie
    ```
 
 2. **Set up Python environment**
@@ -135,27 +137,15 @@ Using **librosa** for audio analysis:
 
 ## 🎮 How to Use
 
-### AI DJ Studio (Recommended)
+### Using DJ Genie
 
-1. Click **"✨ AI DJ Studio"** in the header
+1. Open the app at `http://localhost:5173`
 2. Describe your party:
    > "Create a 10-song New Year's Eve party mix with Bollywood hits, 80s classics, and some EDM bangers. High energy throughout. Shoutouts to Sarah and Mike!"
 3. Review the AI's suggested playlist
 4. Click **"Approve & Generate 🎧"**
 5. Wait for the magic to happen!
 6. Download your professional DJ mix
-
-### Manual Playlist Builder
-
-1. Browse songs by language on the main page
-2. Click segments to add them to your playlist
-3. Drag to reorder
-4. Click **"Create Playlist"**
-5. Configure export options:
-   - Enable DJ voice commentary
-   - Choose transition style
-   - Set video quality
-6. Export and download!
 
 ---
 
@@ -205,7 +195,7 @@ Using **librosa** for audio analysis:
 ## 📁 Project Structure
 
 ```
-video-dj-playlist/
+dj-genie/
 ├── backend/
 │   ├── api/
 │   │   └── routes.py          # API endpoints
@@ -219,8 +209,7 @@ video-dj-playlist/
 ├── frontend/
 │   ├── src/
 │   │   ├── pages/
-│   │   │   └── AIPlaylistPage.tsx  # AI DJ Studio
-│   │   ├── App.tsx
+│   │   │   └── AIPlaylistPage.tsx  # DJ Genie main page
 │   │   └── api.ts
 │   └── package.json
 ├── exports/                   # Generated videos
@@ -248,9 +237,34 @@ video-dj-playlist/
 - Check FFmpeg supports the xfade filter
 
 ### "Download failed"
-- YouTube may require authentication cookies
-- Run `export_youtube_cookies.bat` to export browser cookies
-- Check for rate limiting
+- YouTube may require authentication cookies (see below)
+- Check for rate limiting (wait a few minutes and try again)
+- Ensure yt-dlp is up to date: `pip install -U yt-dlp`
+
+---
+
+## 🍪 YouTube Authentication (Cookies)
+
+YouTube sometimes requires authentication to access videos. If downloads fail, you'll need to export your browser cookies:
+
+### Option 1: Automatic (Windows + Edge)
+```bash
+# Close Edge completely first (check system tray!)
+.\export_youtube_cookies.bat
+```
+
+### Option 2: Python Script
+```bash
+python export_cookies.py
+```
+
+### Option 3: Manual Export
+1. Install browser extension: **"Get cookies.txt LOCALLY"** ([Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc))
+2. Go to https://www.youtube.com and ensure you're logged in
+3. Click the extension → Export
+4. Save to `cache/youtube_cookies.txt`
+
+**Note:** Cookies expire periodically. Re-export if downloads start failing again.
 
 ---
 
@@ -284,6 +298,10 @@ Contributions are welcome! Please read the contributing guidelines before submit
 ---
 
 <p align="center">
+  <strong>🧞‍♂️ DJ Genie</strong>
+  <br>
+  <em>"Describe Your Vibe. We'll Drop the Beat."</em>
+  <br><br>
   Made with ❤️ and 🤖 AI
   <br>
   <strong>This is a demonstration of AI capabilities - use responsibly!</strong>
