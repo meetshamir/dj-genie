@@ -61,7 +61,7 @@ class SongRecommender:
         
         if AZURE_OPENAI_AVAILABLE:
             try:
-                endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://aidj-openai.openai.azure.com/")
+                endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
                 
                 # Use AAD authentication
                 credential = DefaultAzureCredential()

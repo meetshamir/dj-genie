@@ -23,7 +23,8 @@ def log(msg: str):
     sys.stdout.flush()
 
 # Azure OpenAI configuration - Using AAD authentication (DefaultAzureCredential)
-AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://aidj-openai.openai.azure.com/")
+# Set AZURE_OPENAI_ENDPOINT environment variable to your Azure OpenAI endpoint
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 AZURE_OPENAI_AUDIO_DEPLOYMENT = os.environ.get("AZURE_OPENAI_AUDIO_DEPLOYMENT", "gpt-4o-mini-audio")
 
@@ -613,7 +614,8 @@ def add_creative_dj_commentary_to_video(
     output_path: Path,
     context: DJContext,
     voice: str = "energetic_male",
-    frequency: str = "moderate"
+    frequency: str = "moderate",
+    progress_callback: callable = None
 ) -> Tuple[bool, List[Dict]]:
     """
     Complete creative DJ voice integration using Azure OpenAI.
@@ -625,11 +627,17 @@ def add_creative_dj_commentary_to_video(
         context: User-provided DJ context
         voice: Voice style to use
         frequency: Comment frequency
+        progress_callback: Optional callback(step: str, detail: str) for progress updates
     
     Returns:
         Tuple of (success: bool, timeline: list of timing info)
     """
     timeline = []
+    
+    def report_progress(step: str, detail: str = ""):
+        if progress_callback:
+            progress_callback(step, detail)
+        log(f"[AZURE_DJ] {step}" + (f": {detail}" if detail else ""))
     
     log("=" * 60)
     log("[AZURE_DJ] ADD_CREATIVE_DJ_COMMENTARY_TO_VIDEO STARTED")
@@ -648,6 +656,7 @@ def add_creative_dj_commentary_to_video(
     
     try:
         # Get video duration
+        report_progress("Analyzing video", "Getting duration...")
         video_dur, audio_dur = get_stream_durations(video_path)
         video_duration = min(video_dur, audio_dur) if video_dur > 0 and audio_dur > 0 else max(video_dur, audio_dur)
         
@@ -657,11 +666,14 @@ def add_creative_dj_commentary_to_video(
         log(f"[AZURE_DJ] Video duration: {video_duration:.2f}s")
         
         # Generate creative commentary using GPT
+        report_progress("Generating DJ script", "AI is writing your commentary...")
         comments = generate_creative_commentary_with_gpt(segments, context, frequency)
         
         if not comments:
             log("[AZURE_DJ] No comments generated!")
             return False, timeline
+        
+        report_progress("Planning DJ moments", f"Prepared {len(comments)} commentary spots")
         
         # Build segment timing map - use actual video_start_time if available
         # This tells us exactly when each song starts in the final video
@@ -767,7 +779,9 @@ def add_creative_dj_commentary_to_video(
             if start_time < last_clip_end_time + 3.0:
                 start_time = last_clip_end_time + 3.0
             
-            # Generate voice clip
+            # Generate voice clip with progress reporting
+            comment_label = comment.comment_type.replace('_', ' ').title()
+            report_progress(f"Recording voice ({i+1}/{len(comments)})", f"{comment_label}: \"{comment.text[:40]}...\"")
             log(f"[AZURE_DJ] Generating clip {i+1}/{len(comments)}: {comment.comment_type}")
             success = generate_voice_clip(comment.text, clip_path, voice)
             
@@ -793,7 +807,7 @@ def add_creative_dj_commentary_to_video(
                     "type": comment.comment_type,
                     "start_time": start_time,
                     "end_time": start_time + clip_duration,
-                    "text": comment.text[:50] + "..."
+                    "text": comment.text  # Full text for timeline display
                 })
                 
                 # Track end time for next clip
@@ -808,6 +822,7 @@ def add_creative_dj_commentary_to_video(
             return False, timeline
         
         # Mix DJ audio with video using FFmpeg
+        report_progress("Mixing DJ voice", f"Blending {len(dj_clips)} voice clips with music...")
         log(f"[AZURE_DJ] Mixing {len(dj_clips)} clips with video...")
         
         # Build FFmpeg command
