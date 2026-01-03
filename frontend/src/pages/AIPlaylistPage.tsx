@@ -203,7 +203,9 @@ export default function AIPlaylistPage() {
 
   const handleDownload = () => {
     if (jobId) {
-      window.open(`/api/export/jobs/${jobId}/download`, '_blank');
+      // Use backend URL directly since window.open doesn't go through Vite proxy
+      const backendUrl = import.meta.env.DEV ? 'http://localhost:9876' : '';
+      window.open(`${backendUrl}/api/export/jobs/${jobId}/download`, '_blank');
     }
   };
 

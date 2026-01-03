@@ -229,63 +229,93 @@ def generate_creative_commentary_with_gpt(
     
     songs_list = "\n".join(songs_desc)
     
-    # Determine number of comments based on frequency
-    comment_counts = {
-        "minimal": 2,      # intro, outro only
-        "moderate": 4,     # intro, 1-2 transitions, outro
-        "frequent": 5,     # intro, transitions, outro
-        "maximum": 7       # More comments
-    }
-    num_comments = comment_counts.get(frequency, 4)
-    
     # Build the prompt
     mood_str = context.get_mood_str() if hasattr(context, 'get_mood_str') else context.mood
     
-    prompt = f"""You are an energetic AI DJ at a party! Generate {num_comments} DJ voice-over comments for a video DJ mix.
+    # Build shoutout instructions if we have custom shoutouts
+    shoutout_names = context.custom_shoutouts if context.custom_shoutouts else []
+    shoutout_list = ', '.join(shoutout_names) if shoutout_names else "the crowd"
+    
+    # Calculate comment distribution based on number of songs
+    num_songs = len(segments)
+    
+    # Distribution strategy:
+    # - 1 intro (theme-based)
+    # - 1 outro (theme-based) 
+    # - ~40% of songs get a "next up" callout
+    # - ~30% of songs get a personal shoutout
+    # - ~30% of songs get a cultural phrase
+    num_next_up = max(1, int(num_songs * 0.4))
+    num_shoutouts = max(1, int(num_songs * 0.3)) if shoutout_names else 0
+    num_cultural = max(1, int(num_songs * 0.3))
+    
+    total_comments = 2 + num_next_up + num_shoutouts + num_cultural  # intro + outro + rest
+    total_comments = min(total_comments, num_songs + 2)  # Cap at songs + intro/outro
+    
+    prompt = f"""You are an energetic AI DJ at a party! Generate EXACTLY {total_comments} DJ voice-over comments.
 
-PARTY THEME: {context.theme}
+=== PARTY INFO ===
+THEME: {context.theme}
 MOOD: {mood_str}
-AUDIENCE: {context.audience}
+PEOPLE AT THE PARTY: {shoutout_list}
 {f"SPECIAL NOTES: {context.special_notes}" if context.special_notes else ""}
-{f"ORIGINAL REQUEST: {context.original_prompt}" if context.original_prompt else ""}
-{f"SHOUTOUTS TO INCLUDE: {', '.join(context.custom_shoutouts)}" if context.custom_shoutouts else ""}
 
-PLAYLIST ORDER ({len(segments)} songs - this is the exact order they will play):
+=== PLAYLIST ({num_songs} songs) ===
 {songs_list}
 
-CRITICAL RULES:
-1. **segment_index MUST match the song you're talking about!**
-   - segment_index 0 = Song 1 (intro plays during/before song 1)
-   - segment_index 1 = Song 2 
-   - segment_index 2 = Song 3, etc.
-2. When you say "song_intro" for segment_index N, you MUST reference song N+1's title/artist
-3. When you say "transition" to segment_index N, you're transitioning TO song N+1
-4. "hype" or "peak_energy" for segment_index N should hype the CURRENT song N+1
-5. **NEVER mention a song in the wrong position** - check the playlist order above!
+=== COMMENT TYPES (use these EXACT types) ===
 
-INSTRUCTIONS:
-1. Create exactly {num_comments} DJ comments as JSON array
-2. Be creative but BRIEF - real DJs don't ramble!
-3. Reference the party theme naturally
-4. For Bollywood, quick nods like "SRK vibes!" or "Kollywood heat!"
-5. Quick language shoutouts: "Arey!", "Let's go!", "Thalaivar!"
-6. Be NATURAL - don't over-explain or list song details
-7. **KEEP IT SHORT: 5-12 words MAX per comment (3-5 seconds to speak)**
-8. Punchy energy, not long speeches!
+1. **intro** (1 comment) - Theme-based party opener
+   - Reference the theme: "{context.theme}"
+   - 8-12 words max
+   - Example: "Happy New Year everyone! 2026 here we come, let's party!"
 
-OUTPUT FORMAT (JSON array) - segment_index 0 = first song, 1 = second song, etc:
+2. **next_up** ({num_next_up} comments) - Quick song/artist callout BEFORE the song
+   - MUST be 5-8 words only!
+   - Just announce what's coming, nothing else
+   - Examples: "Next up, MJ!", "Here comes Badshah!", "AR Rahman time, let's go!"
+
+3. **shoutout** ({num_shoutouts} comments) - Personal callout to party people DURING a song
+   - MUST include a name from: {shoutout_list}
+   - 5-10 words max
+   - Examples: "Muskaan, you're on fire!", "Karim, break a leg!", "Yo Shamir, this is your jam!"
+
+4. **cultural** ({num_cultural} comments) - Cultural slang phrases DURING a song
+   - MUST be 2-4 words ONLY! Super short!
+   - Match the song's language/culture:
+     * Hindi: "Arey waah!", "Jhakaas!", "Ekdum mast!"
+     * Tamil: "Mass!", "Theri!", "Vera level!"
+     * Malayalam: "Adipoli!", "Pwoli!", "Kidu!"
+     * Punjabi: "Balle balle!", "Oye hoye!", "Paaji rocks!"
+     * Arabic: "Yalla habibi!", "Khalas!"
+     * Turkish: "Harika!", "Süper!"
+     * English: "Let's go!", "Fire!", "Vibes!"
+
+5. **outro** (1 comment) - Theme-based closing
+   - Reference the theme again
+   - 8-12 words max
+   - Example: "What a night! Happy 2026 everyone, stay blessed!"
+
+=== RULES ===
+1. segment_index 0 = first song, 1 = second, etc.
+2. "intro" MUST have segment_index: 0
+3. "outro" MUST have segment_index: {num_songs - 1}
+4. "next_up" goes BEFORE a song starts (segment_index = that song's index)
+5. "shoutout" and "cultural" go DURING a song (segment_index = that song's index)
+6. DISTRIBUTE evenly - don't cluster all comments at the start!
+7. Use DIFFERENT names for each shoutout - spread the love!
+
+=== OUTPUT FORMAT (JSON array) ===
 [
-  {{"type": "intro", "text": "Welcome/theme intro", "segment_index": 0}},
-  {{"type": "song_intro", "text": "Intro for song 1", "segment_index": 0}},
-  {{"type": "transition", "text": "Transition to song 2", "segment_index": 1}},
-  {{"type": "song_intro", "text": "Intro for song 2", "segment_index": 1}},
-  ...
-  {{"type": "outro", "text": "Closing comment", "segment_index": {len(segments)-1}}}
+  {{"type": "intro", "text": "Theme intro here", "segment_index": 0}},
+  {{"type": "next_up", "text": "Next up, [artist]!", "segment_index": 2}},
+  {{"type": "shoutout", "text": "[Name], you rock!", "segment_index": 3}},
+  {{"type": "cultural", "text": "Adipoli!", "segment_index": 5}},
+  {{"type": "next_up", "text": "Here comes MJ!", "segment_index": 6}},
+  {{"type": "outro", "text": "Theme outro here", "segment_index": {num_songs - 1}}}
 ]
 
-Types: intro (party opener), song_intro (introduce specific song), transition (bridge to next song), hype (energy boost), peak_energy (climax moment), outro (closing)
-
-Generate the JSON array now:"""
+Generate EXACTLY {total_comments} comments now (1 intro + {num_next_up} next_up + {num_shoutouts} shoutout + {num_cultural} cultural + 1 outro):"""
 
     try:
         log(f"[AZURE_DJ] Generating {num_comments} creative comments with GPT...")
@@ -673,6 +703,32 @@ def add_creative_dj_commentary_to_video(
                 start_time = 1.5  # Intro starts 1.5 seconds in (during intro clip)
             elif comment.comment_type == "outro":
                 start_time = max(video_duration - 12.0, video_duration * 0.85)
+            elif comment.comment_type == "next_up":
+                # "Next up" plays RIGHT BEFORE the song starts (during transition)
+                if seg_idx < len(segment_timings):
+                    song_start = segment_timings[seg_idx]['start']
+                    # Start 3 seconds before the song begins
+                    start_time = max(song_start - 3.0, last_clip_end_time + 2.0)
+                else:
+                    start_time = last_clip_end_time + 5.0
+            elif comment.comment_type == "shoutout":
+                # Personal shoutouts go in the MIDDLE of the song (40-60% in)
+                if seg_idx < len(segment_timings):
+                    song_start = segment_timings[seg_idx]['start']
+                    song_duration = segment_timings[seg_idx]['duration']
+                    # Place at 50% into the song
+                    start_time = song_start + (song_duration * 0.5)
+                else:
+                    start_time = last_clip_end_time + 8.0
+            elif comment.comment_type == "cultural":
+                # Cultural phrases go early-mid in the song (25-35% in)
+                if seg_idx < len(segment_timings):
+                    song_start = segment_timings[seg_idx]['start']
+                    song_duration = segment_timings[seg_idx]['duration']
+                    # Place at 30% into the song
+                    start_time = song_start + (song_duration * 0.3)
+                else:
+                    start_time = last_clip_end_time + 6.0
             elif comment.comment_type == "song_intro":
                 # Song intro should play RIGHT AT the start of that song
                 if seg_idx < len(segment_timings):

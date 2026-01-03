@@ -14,6 +14,16 @@ dist/
 exports/
 downloads/
 cache/
+*.mp4
+*.mp3
+*.wav
+*.webm
+
+# Playwright MCP outputs
+.playwright-mcp/
+
+# Test exports
+test_exports/
 
 # Database
 *.sqlite
@@ -35,3 +45,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Debug/temp files
+server_out.txt
+server_err.txt
+test_output.txt
+test_error.txt

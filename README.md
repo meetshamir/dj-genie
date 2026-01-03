@@ -95,22 +95,48 @@ The AI understands cultural context for each language, for example:
 | **Arabic** | Middle Eastern grooves | Amr Diab, Nancy Ajram |
 | **Uzbek** | Central Asian rhythms | Uzbek folk fusion |
 
-### 🎤 Real DJ Behavior
+### 🎤 Smart DJ Commentary Types
 
-The AI generates commentary that mirrors what real DJs do:
-- **Quick cultural nods**: "SRK vibes!", "Kollywood heat!", "Arey!"
-- **Language switches**: Appropriate greetings in the song's language
-- **Star callouts**: References famous actors when detected in song titles
-- **Punchy delivery**: 5-12 words max (3-5 seconds)—DJs don't ramble!
+The AI generates 5 distinct types of commentary, distributed based on playlist length:
 
-### 🎵 Intelligent Comment Placement
+| Type | Purpose | Timing | Length |
+|------|---------|--------|--------|
+| **intro** | Theme-based party opener | 1.5s into video | 8-12 words |
+| **next_up** | Quick song/artist callout | Before song starts | 5-8 words |
+| **shoutout** | Personal callout to party people | Mid-song (50%) | 5-10 words |
+| **cultural** | Language-appropriate slang | Early-mid song (30%) | 2-4 words only! |
+| **outro** | Theme-based closing | Last 12 seconds | 8-12 words |
 
-Comments are placed at musically appropriate moments:
-- **Intro**: 1.5 seconds in (during the opening)
-- **Song Intros**: 2 seconds after song transition settles
-- **Transitions**: 5 seconds before next song (during crossfade)
-- **Hype/Peak**: 40% into high-energy segments
-- **Outro**: Final 15% of the mix
+**Examples:**
+- **intro**: "Happy New Year everyone! 2026 here we come, let's party!"
+- **next_up**: "Next up, MJ!" / "Here comes AR Rahman!"
+- **shoutout**: "Karim, break a leg!" / "Muskaan, you're on fire!"
+- **cultural**: "Adipoli!" (Malayalam) / "Mass!" (Tamil) / "Paaji rocks!" (Punjabi)
+- **outro**: "What a night! Happy 2026 everyone, stay blessed!"
+
+### 🌍 Culture-Specific Phrases
+
+The AI uses culturally appropriate slang for each language:
+
+| Language | Cultural Phrases |
+|----------|-----------------|
+| **Hindi** | "Arey waah!", "Jhakaas!", "Ekdum mast!" |
+| **Tamil** | "Mass!", "Theri!", "Vera level!", "Thalaivar!" |
+| **Malayalam** | "Adipoli!", "Pwoli!", "Kidu!" |
+| **Punjabi** | "Balle balle!", "Oye hoye!", "Paaji rocks!" |
+| **Arabic** | "Yalla habibi!", "Khalas!" |
+| **Turkish** | "Harika!", "Süper!" |
+| **English** | "Let's go!", "Fire!", "Vibes!" |
+
+### 🎵 Intelligent Comment Distribution
+
+Comments are distributed proportionally based on playlist length:
+- **~40%** of songs get a "next up" callout
+- **~30%** of songs get a personal shoutout (spread across different people)
+- **~30%** of songs get a cultural phrase
+- Plus intro and outro for every mix
+
+For a 10-song mix, you'll hear approximately **12 DJ comments** spread throughout!
 
 ### 🔊 Professional Audio Mixing
 

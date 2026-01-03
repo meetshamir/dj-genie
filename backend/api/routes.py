@@ -1923,7 +1923,7 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                     output_path=dj_output,
                     context=dj_context,
                     voice="energetic_male",
-                    frequency="moderate"
+                    frequency="frequent"  # More commentary for better party vibe!
                 )
                 
                 if dj_success and dj_output.exists():
