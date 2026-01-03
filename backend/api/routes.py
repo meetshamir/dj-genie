@@ -1498,16 +1498,22 @@ async def ai_chat_message(request: AIChatMessageRequest, db: Session = Depends(g
             system_prompt = """You are an AI DJ assistant helping create the perfect party playlist.
 Your job is to:
 1. Understand the user's party theme, mood, and preferences
-2. Ask clarifying questions about languages, artists, energy levels
+2. Ask clarifying questions about languages, artists, energy levels  
 3. Suggest songs that match their vibe
-4. Create DJ commentary and shoutouts
+4. Create DJ commentary with personal shoutouts to friends mentioned by the user
+
+IMPORTANT: If the user mentions friends/people to call out, ALWAYS include them in "party_people" as individual names.
 
 When you have enough info to create a plan, output JSON like this:
 ```json
 {"ready": true, "theme": "Party Theme", "mood": ["energetic"], "languages": ["English"], 
 "duration_minutes": 30, "songs": [{"title": "Song", "artist": "Artist", "why": "reason"}],
+"party_people": ["Friend1", "Friend2", "Friend3"],
 "commentary_samples": ["Welcome!"], "shoutouts": ["Happy New Year!"]}
 ```
+
+"party_people" should contain INDIVIDUAL NAMES of friends the user wants called out by the DJ.
+"shoutouts" should contain generic party phrases.
 
 Be conversational, fun, and enthusiastic like a real DJ! Use emojis."""
 
@@ -1556,7 +1562,15 @@ Be conversational, fun, and enthusiastic like a real DJ! Use emojis."""
                         plan.mood = json.dumps(plan_data.get("mood", []))
                         plan.songs = json.dumps(plan_data.get("songs", []))
                         plan.commentary_samples = json.dumps(plan_data.get("commentary_samples", []))
-                        plan.shoutouts = json.dumps(plan_data.get("shoutouts", []))
+                        
+                        # Prioritize party_people (friend names) over shoutouts for DJ voice
+                        party_people = plan_data.get("party_people", [])
+                        if party_people:
+                            # Use friend names for DJ shoutouts
+                            plan.shoutouts = json.dumps(party_people)
+                        else:
+                            plan.shoutouts = json.dumps(plan_data.get("shoutouts", []))
+                        
                         plan.languages = json.dumps(plan_data.get("languages", []))
                         plan.duration_minutes = plan_data.get("duration_minutes", 30)
                         
