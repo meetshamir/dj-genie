@@ -514,7 +514,8 @@ dj-genie/
 
 ## 🔧 Troubleshooting
 
-### "Video won't play"
+### "Video won't play" or playback issues
+- **Use VLC Media Player** - Windows Media Player and some browsers have codec issues. VLC handles all video formats reliably: https://www.videolan.org/vlc/
 - Ensure FFmpeg is installed and in PATH
 - Check that all source videos downloaded successfully
 - Look for A/V sync warnings in the console
