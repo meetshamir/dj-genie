@@ -286,6 +286,8 @@ class HealthResponse(BaseModel):
     gpu_encoder: Optional[str] = None
     disk_space_available_gb: float
     cache_size_mb: float
+    openai_available: bool = False
+    openai_error: Optional[str] = None
 
 
 class ClearCacheRequest(BaseModel):

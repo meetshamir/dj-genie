@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="DJ%20Genie%20Logo.png" alt="DJ Genie Logo" width="200"/>
+</p>
+
 # 🧞‍♂️ DJ Genie - Your AI Video Jockey!
 
 > **"Describe Your Vibe. We'll Drop the Beat."**
@@ -344,69 +348,120 @@ energy = (
 
 Here's a real conversation with DJ Genie creating a New Year's Eve party mix:
 
----
-
-**You:** Create a video of 20 mins max. Songs should be between 30 and 60 seconds each. The theme is new year party, goodbye 2025, welcome 2026. Call out my friends in the party from time to time.. like say.. hey Karim break a leg.. Friends in the party are Karim, Doni, Halima, Ayesha, Anisha, Remin, Muskaan, SMAT, Daisy, Mehr, Shamir. When turkish, Uzbeki, punjabi songs turn.. call out Karim, Doni, Halima. When malayalam, tamil, hindi songs happen use some catchy words like adipoli or maas or poli or use paaji.. tusi.. bangda or something like that.. you get the gist, use the language and the culture when playing that language's song. Keep your commentary brief, just a few words.. not paragraphs. If you have intro commentary then don't do middle of the song commentary. Keep it random, sometimes intro sometimes in the middle. Hit songs dance numbers only from the last 3 years across hindi, tamil, malyalam, arabic, turkish, uzbekistan and english. Should include SRK songs across the years. Should include some of the most popular tamil kuttu songs like apdi podu. Should include some MJ hits. Should include some recent English hits. Should include industry baby. Should have badshaa, honey singh and some anu malik numbers. Also include AR Rahman songs both tamil and hindi. Should include youm wara youm. And some yester year hits like ice ice baby, informer, george michael, bryan adams, from the 80s, 90s. Mostly hindi songs, 3-5 tamil, Malayalam, Punjabi, Arabic songs, About 10-15 English hits.
+![DJ Genie Demo](screenshots/dj-genie-demo.gif)
 
 ---
 
-**🧞‍♂️ DJ Genie:** 🎉 Hey party people! Let's gear up for an unforgettable New Year's bash as we say goodbye to 2025 and welcome 2026 with a bang! I'm here to make sure your playlist is lit and your dance floor stays packed! 💃🕺 Let's get some deets to nail down the perfect playlist:
-
-1. Do you have any specific artists you absolutely love or want me to focus on?
-2. Any particular energy level you're aiming for—high-energy all the way or some cool-down moments?
-3. What language balance are you looking for? A bit more Hindi or equal parts of everything?
-4. Is there a particular vibe or mood you want to create—like nostalgic, futuristic, or just pure party?
-
-Let me know, and I'll whip up a party playlist that'll have you dancing into the new year in style! 🎶✨
+**You:** Create a 10 min max video. Songs should be 30-60 seconds each. Theme: New Year Party - Goodbye 2025, Welcome 2026! Shoutouts to: Karim, Doni, Halima, Ayesha, Anisha, Remin, Muskaan, SMAT, Daisy, Mehr, Shamir. Include: Hit dance songs from last 3 years (Hindi, Tamil, Malayalam, Arabic, Turkish, Uzbek, English), SRK songs across the years, Tamil kuttu songs like Apdi Podu, MJ hits, recent English hits including Industry Baby, Badshah, Honey Singh, Anu Malik numbers, AR Rahman songs (Tamil & Hindi), Youm Wara Youm, and yesteryear hits like Ice Ice Baby, Informer, George Michael, Bryan Adams from 80s/90s.
 
 ---
 
-**You:** mix it up
+**🧞‍♂️ DJ Genie:** Wow, what a spectacular lineup you've got planned for your New Year's bash! 🎉 Let's make sure we cover all the amazing vibes you want to bring in as we say goodbye to 2025 and welcome 2026 with a bang. Here's how we'll get this party started:
+
+- **Theme:** New Year Party - Goodbye 2025, Welcome 2026!
+- **Mood:** Energetic, Celebratory, Nostalgic
+- **Duration:** 10 minutes
+- **Language Preferences:** Hindi, Tamil, Malayalam, Arabic, Turkish, Uzbek, English
+
+Let's dive into the playlist and make sure it's as vibrant as your guest list! 🥳
+
+```json
+{
+  "ready": true,
+  "theme": "New Year Party - Goodbye 2025, Welcome 2026!",
+  "mood": ["energetic", "celebratory", "nostalgic"],
+  "languages": ["Hindi", "Tamil", "Malayalam", "Arabic", "Turkish", "Uzbek", "English"],
+  "duration_minutes": 10,
+  "songs": [
+    {
+      "title": "Industry Baby",
+      "artist": "Lil Nas X, Jack Harlow",
+      "language": "English",
+      "why": "Recent hit to start the energy high!"
+    },
+    {
+      "title": "Apdi Podu",
+      "artist": "Vijay, Deva",
+      "language": "Tamil",
+      "why": "Classic Kuttu song to amp up the dance floor!"
+    },
+    {
+      "title": "Jhoome Jo Pathaan",
+      "artist": "Vishal-Shekhar, Arijit Singh",
+      "language": "Hindi",
+      "why": "Super hit SRK number to get everyone grooving!"
+    },
+    {
+      "title": "Youm Wara Youm",
+      "artist": "Samira Said",
+      "language": "Arabic",
+      "why": "Arabic vibe to add an exotic touch!"
+    },
+    {
+      "title": "Ice Ice Baby",
+      "artist": "Vanilla Ice",
+      "language": "English",
+      "why": "Nostalgic hit from the 90s to bring back memories!"
+    },
+    {
+      "title": "Calm Down",
+      "artist": "Rema, Selena Gomez",
+      "language": "English",
+      "why": "Recent chartbuster to keep the mood lively!"
+    },
+    {
+      "title": "Bole Chudiyan",
+      "artist": "Karan Johar",
+      "language": "Hindi",
+      "why": "Bollywood classic to evoke some nostalgia!"
+    },
+    {
+      "title": "Alla Yarim",
+      "artist": "Zarina Nizomiddinova",
+      "language": "Uzbek",
+      "why": "Catchy Uzbek track for a cultural twist!"
+    }
+  ],
+  "party_people": ["Karim", "Doni", "Halima", "Ayesha", "Anisha", "Remin", "Muskaan", "SMAT", "Daisy", "Mehr", "Shamir"],
+  "cultural_phrases": {
+    "hindi": ["Arey waah!", "Jhakaas!", "Mast hai!"],
+    "tamil": ["Mass!", "Theri!", "Vera level!"],
+    "malayalam": ["Adipoli!", "Pwoli!", "Kidu!"],
+    "arabic": ["Yalla habibi!", "Khalas!"],
+    "turkish": ["Harika!", "Süper!"],
+    "uzbek": ["Zo'r!", "Ajoyib!"],
+    "english": ["Let's go!", "Fire!", "Vibes!"]
+  },
+  "commentary_samples": ["Welcome!", "Are you ready to rock 2026?! 🌟"],
+  "shoutouts": ["Happy New Year!", "Let's make some noise for Karim, Doni, Halima, Ayesha, Anisha, Remin, Muskaan, SMAT, Daisy, Mehr, and Shamir! 🎉"]
+}
+```
+
+This diverse and energetic setlist is sure to keep your party people on their feet! Time to dance the night away and welcome 2026 with open arms! 🎊 Let's get this party started! 💃🕺
 
 ---
 
-**🧞‍♂️ DJ Genie:** Awesome! 🎉 Let's mix it up for a dynamic party vibe that has something for everyone! We'll blend high-energy dance tracks, nostalgic throwbacks, and a splash of international hits to make this New Year's Eve unforgettable! Here's what I'm thinking:
+**✅ Your mix is ready!**
 
-- **Energy Level**: High-energy with a few nostalgic and chill moments
-- **Language Mix**: Mostly Hindi with a good variety of Tamil, Malayalam, Punjabi, Arabic, Turkish, Uzbek, and English
-- **Vibe**: Eclectic and celebratory, with shoutouts to keep the energy up and personalized!
+📋 **Mix Timeline:**
 
-Here's a sneak peek of the playlist:
+⏱️ 0:03 - 🎬 "What's up party people! Welcome to the New Year Party - Goodbye 2025, Welcome 2026!! Let's get this celebration started!"
+⏱️ 0:04 - 🎵 **Apdi Podu** by Vijay, Deva
+⏱️ 0:45 - 🎵 **Bole Chudiyan** by Karan Johar
+⏱️ 1:26 - 🎵 **Industry Baby** by Lil Nas X, Jack Harlow
+⏱️ 2:06 - 🎵 **Calm Down** by Rema, Selena Gomez
+⏱️ 2:43 - 🗣️ "We're halfway through this amazing mix! Uzbek vibes coming in hot!"
+⏱️ 2:48 - 🎵 **Alla Yarim** by Zarina Nizomiddinova
+⏱️ 3:29 - 🎵 **Jhoome Jo Pathaan** by Vishal-Shekhar, Arijit Singh
+⏱️ 4:10 - 🎵 **Youm Wara Youm** by Samira Said
+⏱️ 4:51 - 🎵 **Ice Ice Baby** by Vanilla Ice
+⏱️ 5:20 - 🎤 "That's a wrap on this incredible party! New Year Party - Goodbye 2025, Welcome 2026! - what a night! Stay groovy!"
 
-- **SRK Hits**: Gotta have some Shah Rukh Khan magic in there!
-- **Tamil & Malayalam Kuttu**: Songs like "Apdi Podu" and other foot-tapping numbers
-- **Punjabi Bangers**: A couple of Punjabi tracks to get that bangda vibe going
-- **Arabic & Turkish Beats**: Tracks like "Youm Wara Youm" to bring an exotic twist
-- **Uzbek Gems**: A surprise hit or two for some cultural flair
-- **English Hits**: Including "Industry Baby" and recent chart-toppers
-- **Throwback Classics**: "Ice Ice Baby," "Informer," and some Bryan Adams and George Michael
-- **Michael Jackson**: Timeless MJ tunes for classic dance moves
-
-And some shoutouts to keep it lively:
-
-- "Hey Karim, break a leg on the dance floor! 🕺"
-- "Ayesha, show them your moves! 💃"
-- "Apdi podu, paaji! Tusi rock the floor, Doni! 🇮🇳"
-- "Let's see those moves, Halima! Maas! 🎉"
-- "Dance like no one's watching, Muskaan! 🎶"
-
-Does this sound like the party mix you're looking for? Ready to create the playlist to kick off the new year with a bang? 🚀✨
+⬇️ Download your mix from the panel on the right!
 
 ---
 
-**You:** yes
-
----
-
-**🧞‍♂️ DJ Genie:** Fantastic! 🎉 Let's lock in this electrifying party playlist to celebrate the New Year with flair!
-
-*[DJ Genie generates a complete playlist with songs, transitions, and personalized shoutouts...]*
-
-Let's get this party started and make it a night to remember! 🎊 Happy New Year to you and your friends! 🎆
-
----
-
-The AI then generates a 20-minute video mix with all your requested songs, smooth transitions, and culture-aware DJ commentary calling out your friends by name!
+The AI generates a complete video mix with all your requested songs, smooth transitions, and culture-aware DJ commentary calling out your friends by name!
 
 ---
 

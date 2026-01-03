@@ -6,6 +6,10 @@ __pycache__/
 venv/
 *.egg-info/
 
+# Environment files (secrets!)
+.env
+*.env.local
+
 # Node
 node_modules/
 dist/

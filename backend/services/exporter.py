@@ -737,21 +737,24 @@ def export_playlist(
         # Step 2: Download and process each segment
         for i, segment in enumerate(segments):
             progress = 10 + (i / len(segments)) * 70  # 10% to 80%
-            update_progress("downloading", progress, f"Downloading segment {i+1}/{len(segments)}...", i)
+            song_name = segment.song_title[:30] if segment.song_title else f"Song {i+1}"
+            update_progress("downloading", progress, f"Downloading: {song_name} ({i+1}/{len(segments)})", i)
             
             # Use source_path if available (from auto_playlist), otherwise download
             if hasattr(segment, 'source_path') and segment.source_path and Path(segment.source_path).exists():
                 video_path = Path(segment.source_path)
                 logger.info(f"Using local video: {video_path}")
+                update_progress("processing", progress + 1, f"Found cached: {song_name}", i)
             else:
                 # Download video
                 video_path = download_video(segment.youtube_id, download_dir, video_quality)
             
             if not video_path:
                 logger.warning(f"Skipping segment {i}: download failed")
+                update_progress("processing", progress + 1, f"Skipped: {song_name} (download failed)", i)
                 continue
             
-            update_progress("processing", progress + 2, f"Processing segment {i+1}/{len(segments)}...", i)
+            update_progress("processing", progress + 3, f"Cutting & overlaying: {song_name}", i)
             
             # Extract segment with overlay
             processed_path = temp_dir / f"segment_{i:03d}.mp4"
@@ -777,13 +780,13 @@ def export_playlist(
             return ExportResult(success=False, error="No segments were successfully processed")
         
         # Step 3: Create outro
-        update_progress("processing", 82, "Creating outro...", len(segments))
+        update_progress("processing", 82, "Creating outro clip...", len(segments))
         outro_path = temp_dir / "outro.mp4"
         if create_outro_clip(outro_path, "Thanks for listening!", 3.0, width, height):
             segment_files.append(outro_path)
         
         # Step 4: Concatenate with transitions
-        update_progress("concatenating", 85, "Creating transitions and final video...", len(segments))
+        update_progress("concatenating", 84, f"Joining {len(segment_files)} clips with crossfade transitions...", len(segments))
         
         if crossfade_duration > 0 and len(segment_files) > 1:
             success = create_transition_concat(
@@ -802,7 +805,33 @@ def export_playlist(
         # Step 5: Add DJ voice if enabled
         dj_timeline = []
         if dj_enabled:
-            update_progress("processing", 92, "Adding AI DJ voice commentary...", len(segments))
+            update_progress("processing", 88, "Preparing AI DJ voice commentary...", len(segments))
+            
+            # Create a progress callback for DJ voice that updates the main progress
+            def dj_progress_callback(step: str, detail: str = ""):
+                # Map DJ steps to progress percentages (88% to 98%)
+                step_progress = {
+                    "Analyzing video": 88,
+                    "Generating DJ script": 89,
+                    "Planning DJ moments": 90,
+                }
+                # Recording voice clips: 90% to 96%
+                if step.startswith("Recording voice"):
+                    # Extract clip number from step like "Recording voice (3/8)"
+                    import re
+                    match = re.search(r'\((\d+)/(\d+)\)', step)
+                    if match:
+                        current, total = int(match.group(1)), int(match.group(2))
+                        progress = 90 + (current / total) * 6  # 90% to 96%
+                    else:
+                        progress = 93
+                elif step == "Mixing DJ voice":
+                    progress = 97
+                else:
+                    progress = step_progress.get(step, 92)
+                
+                update_progress("processing", progress, f"DJ: {step}" + (f" - {detail}" if detail else ""), len(segments))
+            
             print("="*50)
             print("[DJ] STARTING DJ VOICE PROCESSING")
             print(f"[DJ] Input video: {output_path}")
@@ -902,7 +931,8 @@ def export_playlist(
                             dj_output,
                             context_obj,
                             dj_voice_mapped,
-                            dj_frequency
+                            dj_frequency,
+                            dj_progress_callback  # Pass progress callback
                         )
                         
                     except ImportError as ie:

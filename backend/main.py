@@ -8,6 +8,11 @@ import os
 import sys
 from pathlib import Path
 
+# Load environment variables from .env file FIRST (before any other imports)
+from dotenv import load_dotenv
+backend_dir = Path(__file__).parent
+load_dotenv(backend_dir / ".env")
+
 # Add FFmpeg to PATH (WinGet installation location)
 ffmpeg_paths = [
     Path.home() / "AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin",
@@ -20,7 +25,6 @@ for ffmpeg_path in ffmpeg_paths:
         break
 
 # Add backend directory to path for imports
-backend_dir = Path(__file__).parent
 sys.path.insert(0, str(backend_dir))
 
 from contextlib import asynccontextmanager

@@ -10,6 +10,7 @@ import logging
 import subprocess
 import tempfile
 import json
+import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
@@ -234,8 +235,44 @@ def generate_creative_commentary_with_gpt(
     mood_str = context.get_mood_str() if hasattr(context, 'get_mood_str') else context.mood
     
     # Build shoutout instructions if we have custom shoutouts
-    shoutout_names = context.custom_shoutouts if context.custom_shoutouts else []
+    # Extract individual names from shoutouts (they might be full sentences)
+    raw_shoutouts = context.custom_shoutouts if context.custom_shoutouts else []
+    shoutout_names = []
+    
+    for item in raw_shoutouts:
+        # Check if item looks like a sentence (contains common words or is long)
+        if len(item) > 30 or any(word in item.lower() for word in ['noise', 'make', 'for', 'the', 'to', 'happy', 'year']):
+            # Try to extract names from sentence like "Make some noise for Karim, Doni, Halima..."
+            import re
+            # Look for capitalized words that could be names
+            potential_names = re.findall(r'\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b', item)
+            # Filter out common words
+            common_words = {'Happy', 'New', 'Year', 'Make', 'Some', 'Noise', 'The', 'And', 'For', 'Let', 'Go'}
+            names = [n for n in potential_names if n not in common_words and len(n) > 2]
+            shoutout_names.extend(names)
+        else:
+            # Looks like a simple name
+            shoutout_names.append(item)
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_names = []
+    for name in shoutout_names:
+        if name not in seen:
+            seen.add(name)
+            unique_names.append(name)
+    shoutout_names = unique_names
+    
     shoutout_list = ', '.join(shoutout_names) if shoutout_names else "the crowd"
+    log(f"[AZURE_DJ] Shoutout names extracted: {shoutout_names}")
+    
+    # Extract unique languages from segments for cultural phrases
+    unique_languages = set()
+    for seg in segments:
+        lang = seg.get('language', 'english').lower()
+        if lang and lang != 'unknown':
+            unique_languages.add(lang)
+    log(f"[AZURE_DJ] Languages in playlist: {unique_languages}")
     
     # Calculate comment distribution based on number of songs
     num_songs = len(segments)
@@ -244,14 +281,17 @@ def generate_creative_commentary_with_gpt(
     # - 1 intro (theme-based)
     # - 1 outro (theme-based) 
     # - ~40% of songs get a "next up" callout
-    # - ~30% of songs get a personal shoutout
-    # - ~30% of songs get a cultural phrase
+    # - ~40% of songs get a personal shoutout (increased from 30%)
+    # - At least 1 cultural phrase per unique language, or 50% of songs
     num_next_up = max(1, int(num_songs * 0.4))
-    num_shoutouts = max(1, int(num_songs * 0.3)) if shoutout_names else 0
-    num_cultural = max(1, int(num_songs * 0.3))
+    num_shoutouts = max(2, int(num_songs * 0.4)) if shoutout_names else 0
+    num_cultural = max(len(unique_languages), int(num_songs * 0.5))  # At least one per language
     
     total_comments = 2 + num_next_up + num_shoutouts + num_cultural  # intro + outro + rest
-    total_comments = min(total_comments, num_songs + 2)  # Cap at songs + intro/outro
+    # Allow more comments - cap at 2x songs to give room for variety
+    total_comments = min(total_comments, num_songs * 2)
+    
+    log(f"[AZURE_DJ] Comment distribution: intro=1, next_up={num_next_up}, shoutouts={num_shoutouts}, cultural={num_cultural}, outro=1, total={total_comments}")
     
     prompt = f"""You are an energetic AI DJ at a party! Generate EXACTLY {total_comments} DJ voice-over comments.
 
@@ -319,7 +359,7 @@ PEOPLE AT THE PARTY: {shoutout_list}
 Generate EXACTLY {total_comments} comments now (1 intro + {num_next_up} next_up + {num_shoutouts} shoutout + {num_cultural} cultural + 1 outro):"""
 
     try:
-        log(f"[AZURE_DJ] Generating {num_comments} creative comments with GPT...")
+        log(f"[AZURE_DJ] Generating {total_comments} creative comments with GPT...")
         
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
@@ -372,11 +412,11 @@ def generate_fallback_commentary(
     segments: List[Dict],
     context: DJContext
 ) -> List[CreativeDJComment]:
-    """Fallback commentary when GPT is not available."""
+    """Fallback commentary when GPT is not available - includes shoutouts and cultural callouts."""
     comments = []
     
-    # Intro
-    intro_text = f"What's up party people! Welcome to the {context.theme}! Let's get this celebration started!"
+    # Intro - theme-based
+    intro_text = f"What's up party people! Welcome to {context.theme}! Let's get this celebration started!"
     comments.append(CreativeDJComment(
         text=intro_text,
         comment_type="intro",
@@ -384,11 +424,63 @@ def generate_fallback_commentary(
         segment_index=0
     ))
     
-    # Middle comment
-    if len(segments) > 1:
-        mid_idx = len(segments) // 2
+    # Extract shoutout names from context
+    shoutout_names = []
+    for item in context.custom_shoutouts:
+        import re
+        if len(item) > 30 or any(word in item.lower() for word in ['noise', 'make', 'for', 'the']):
+            potential_names = re.findall(r'\b([A-Z][a-z]+)\b', item)
+            common_words = {'Happy', 'New', 'Year', 'Make', 'Some', 'Noise', 'The', 'And', 'For', 'Let', 'Go'}
+            names = [n for n in potential_names if n not in common_words and len(n) > 2]
+            shoutout_names.extend(names)
+        else:
+            shoutout_names.append(item)
+    
+    # Language-based cultural phrases
+    cultural_phrases = {
+        'hindi': ['Arey waah!', 'Ekdum mast!', 'Jhakaas!'],
+        'tamil': ['Mass!', 'Theri!', 'Vera level!'],
+        'malayalam': ['Adipoli!', 'Pwoli!', 'Kidu!'],
+        'arabic': ['Yalla habibi!', 'Khalas!'],
+        'turkish': ['Harika!', 'Süper!'],
+        'english': ['Let\'s go!', 'Fire!', 'Vibes!']
+    }
+    
+    num_segments = len(segments)
+    shoutout_idx = 0
+    
+    # Add shoutouts and cultural callouts distributed across songs
+    for i, seg in enumerate(segments):
+        lang = seg.get('language', 'english').lower()
+        
+        # Add a cultural phrase for every other song (at 30% in)
+        if i % 2 == 0 and lang in cultural_phrases:
+            phrases = cultural_phrases.get(lang, cultural_phrases['english'])
+            phrase = phrases[i % len(phrases)]
+            comments.append(CreativeDJComment(
+                text=phrase,
+                comment_type="cultural",
+                position="between",
+                segment_index=i
+            ))
+        
+        # Add a shoutout for every 3rd song (at 50% in)
+        if shoutout_names and i % 3 == 1:
+            name = shoutout_names[shoutout_idx % len(shoutout_names)]
+            shoutout_idx += 1
+            shoutout_text = f"{name}, this one's for you!"
+            comments.append(CreativeDJComment(
+                text=shoutout_text,
+                comment_type="shoutout",
+                position="between",
+                segment_index=i
+            ))
+    
+    # Middle transition comment (halfway through)
+    if num_segments > 3:
+        mid_idx = num_segments // 2
         mid_lang = segments[mid_idx].get("language", "english")
-        mid_text = f"We're halfway through this amazing mix! {mid_lang.title()} vibes coming in hot!"
+        mid_text = f"Halfway there! {mid_lang.title()} vibes coming in hot!"
         comments.append(CreativeDJComment(
             text=mid_text,
             comment_type="transition",
@@ -396,15 +488,16 @@ def generate_fallback_commentary(
             segment_index=mid_idx
         ))
     
-    # Outro
-    outro_text = f"That's a wrap on this incredible party! {context.theme} - what a night! Stay groovy!"
+    # Outro - theme-based
+    outro_text = f"That's a wrap! {context.theme} - what a night! Stay blessed!"
     comments.append(CreativeDJComment(
         text=outro_text,
         comment_type="outro",
         position="after",
-        segment_index=len(segments) - 1
+        segment_index=num_segments - 1
     ))
     
+    log(f"[AZURE_DJ] Fallback generated {len(comments)} comments with shoutouts and cultural callouts")
     return comments
 
 
@@ -703,6 +796,7 @@ def add_creative_dj_commentary_to_video(
             log(f"[AZURE_DJ]   Song {i+1}: {st['title'][:30]} @ {st['start']:.1f}s ({st['duration']:.0f}s)")
         
         dj_clips = []
+        clip_times = []  # Track time per clip for ETA
         # Track last end time to prevent overlaps
         last_clip_end_time = 0.0
         
@@ -781,9 +875,19 @@ def add_creative_dj_commentary_to_video(
             
             # Generate voice clip with progress reporting
             comment_label = comment.comment_type.replace('_', ' ').title()
-            report_progress(f"Recording voice ({i+1}/{len(comments)})", f"{comment_label}: \"{comment.text[:40]}...\"")
+            
+            # Calculate ETA for voice recording
+            remaining_clips = len(comments) - i
+            avg_clip_time = sum(clip_times) / len(clip_times) if clip_times else 3.0  # ~3s per clip
+            eta_seconds = int(remaining_clips * avg_clip_time)
+            eta_str = f"~{eta_seconds}s" if eta_seconds < 60 else f"~{eta_seconds//60}m {eta_seconds%60}s"
+            
+            report_progress(f"Recording voice ({i+1}/{len(comments)}) [{eta_str}]", f"{comment_label}: \"{comment.text[:40]}...\"")
+            
+            clip_start_time = time.time()
             log(f"[AZURE_DJ] Generating clip {i+1}/{len(comments)}: {comment.comment_type}")
             success = generate_voice_clip(comment.text, clip_path, voice)
+            clip_times.append(time.time() - clip_start_time)  # Track time for ETA
             
             if success and clip_path.exists():
                 clip_duration = get_dj_clip_duration(str(clip_path))

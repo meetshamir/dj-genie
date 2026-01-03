@@ -60,6 +60,15 @@ interface ExportProgress {
   };
 }
 
+interface ServiceStatus {
+  status: string;
+  version: string;
+  ffmpeg_installed: boolean;
+  openai_available: boolean;
+  openai_error?: string;
+  loading: boolean;
+}
+
 export default function AIPlaylistPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -71,9 +80,51 @@ export default function AIPlaylistPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [mixTimeline, setMixTimeline] = useState<TimelineEntry[]>([]);
+  const [serviceStatus, setServiceStatus] = useState<ServiceStatus>({
+    status: 'unknown',
+    version: '',
+    ffmpeg_installed: false,
+    openai_available: false,
+    loading: true
+  });
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Check service status on load
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const response = await fetch('http://localhost:9876/api/health');
+        if (response.ok) {
+          const data = await response.json();
+          setServiceStatus({
+            status: data.status,
+            version: data.version,
+            ffmpeg_installed: data.ffmpeg_installed,
+            openai_available: data.openai_available,
+            openai_error: data.openai_error,
+            loading: false
+          });
+        } else {
+          setServiceStatus(prev => ({
+            ...prev,
+            status: 'error',
+            loading: false,
+            openai_error: 'Backend not responding'
+          }));
+        }
+      } catch (error) {
+        setServiceStatus(prev => ({
+          ...prev,
+          status: 'offline',
+          loading: false,
+          openai_error: 'Cannot connect to backend server'
+        }));
+      }
+    };
+    checkHealth();
+  }, []);
 
   // Auto-scroll messages
   useEffect(() => {
@@ -297,20 +348,55 @@ export default function AIPlaylistPage() {
     <div style={{ display: 'flex', height: '100vh', backgroundColor: '#111827', color: 'white' }}>
       {/* Left Panel - Chat */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', borderRight: '1px solid #374151' }}>
-        <div style={{ padding: '1rem', borderBottom: '1px solid #374151' }}>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            🧞‍♂️ DJ Genie
-          </h1>
-          <p style={{ color: '#9CA3AF', fontSize: '0.875rem' }}>Describe Your Vibe. We'll Drop the Beat.</p>
+        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #374151' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: 0 }}>
+                🧞‍♂️ DJ Genie
+              </h1>
+              <p style={{ color: '#9CA3AF', fontSize: '0.75rem', margin: 0 }}>Describe Your Vibe. We'll Drop the Beat.</p>
+            </div>
+            {/* Service Status Indicator */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem' }}>
+              {serviceStatus.loading ? (
+                <span style={{ color: '#9CA3AF' }}>⏳ Checking...</span>
+              ) : serviceStatus.status === 'offline' ? (
+                <span style={{ color: '#EF4444' }}>🔴 Backend Offline</span>
+              ) : !serviceStatus.openai_available ? (
+                <span style={{ color: '#F59E0B', cursor: 'help' }} title={serviceStatus.openai_error || 'OpenAI not configured'}>
+                  🟡 AI Offline
+                </span>
+              ) : (
+                <span style={{ color: '#10B981' }}>🟢 Ready</span>
+              )}
+            </div>
+          </div>
+          {/* Warning Banner */}
+          {!serviceStatus.loading && (serviceStatus.status === 'offline' || !serviceStatus.openai_available) && (
+            <div style={{ 
+              marginTop: '0.5rem', 
+              padding: '0.5rem', 
+              backgroundColor: serviceStatus.status === 'offline' ? '#7F1D1D' : '#78350F',
+              borderRadius: '0.375rem',
+              fontSize: '0.75rem'
+            }}>
+              {serviceStatus.status === 'offline' ? (
+                <>⚠️ Cannot connect to backend. Please start the server with: <code style={{ backgroundColor: '#1F2937', padding: '0.125rem 0.25rem', borderRadius: '0.25rem' }}>cd backend && python -m uvicorn main:app --port 9876</code></>
+              ) : (
+                <>⚠️ {serviceStatus.openai_error || 'Azure OpenAI not configured'}. AI chat will use fallback responses.</>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Messages */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
           {messages.length === 0 && (
-            <div style={{ textAlign: 'center', color: '#6B7280', marginTop: '2rem' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎵</div>
-              <p>Start by telling me about your event!</p>
-              <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>Or hit YOLO for a surprise mix 🎲</p>
+            <div style={{ textAlign: 'center', color: '#6B7280', marginTop: '3rem' }}>
+              <img src="/logo.png" alt="DJ Genie" style={{ width: '300px', height: '300px', borderRadius: '32px', marginBottom: '1.5rem', boxShadow: '0 8px 32px rgba(124, 58, 237, 0.3)' }} />
+              <h2 style={{ fontSize: '1.5rem', color: 'white', marginBottom: '0.5rem' }}>Welcome to DJ Genie!</h2>
+              <p style={{ marginBottom: '0.5rem' }}>Start by telling me about your event!</p>
+              <p style={{ fontSize: '0.875rem' }}>Or hit YOLO for a surprise mix 🎲</p>
             </div>
           )}
           
@@ -347,7 +433,7 @@ export default function AIPlaylistPage() {
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button
               onClick={handleYolo}
-              disabled={isLoading || !!jobId}
+              disabled={isLoading || !!jobId || serviceStatus.status === 'offline'}
               style={{ 
                 padding: '0.5rem 1rem', 
                 background: 'linear-gradient(to right, #EC4899, #F97316)',
@@ -355,8 +441,8 @@ export default function AIPlaylistPage() {
                 fontWeight: 'bold',
                 border: 'none',
                 color: 'white',
-                cursor: isLoading || jobId ? 'not-allowed' : 'pointer',
-                opacity: isLoading || jobId ? 0.5 : 1
+                cursor: isLoading || jobId || serviceStatus.status === 'offline' ? 'not-allowed' : 'pointer',
+                opacity: isLoading || jobId || serviceStatus.status === 'offline' ? 0.5 : 1
               }}
             >
               🎲 YOLO
@@ -366,8 +452,8 @@ export default function AIPlaylistPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && sendMessage(input)}
-              placeholder="Describe your perfect party mix..."
-              disabled={isLoading || !!jobId}
+              placeholder={serviceStatus.status === 'offline' ? 'Backend offline...' : 'Describe your perfect party mix...'}
+              disabled={isLoading || !!jobId || serviceStatus.status === 'offline'}
               style={{ 
                 flex: 1, 
                 backgroundColor: '#1F2937', 
@@ -380,7 +466,7 @@ export default function AIPlaylistPage() {
             />
             <button
               onClick={() => sendMessage(input)}
-              disabled={!input.trim() || isLoading || !!jobId}
+              disabled={!input.trim() || isLoading || !!jobId || serviceStatus.status === 'offline'}
               style={{ 
                 padding: '0.5rem 1rem', 
                 backgroundColor: '#7C3AED',
@@ -466,6 +552,25 @@ export default function AIPlaylistPage() {
         ) : plan ? (
           // Plan Preview View
           <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
+            {/* Approve Button - At Top */}
+            <button
+              onClick={handleApprove}
+              style={{ 
+                width: '100%', 
+                padding: '0.75rem', 
+                background: 'linear-gradient(to right, #7C3AED, #EC4899)',
+                borderRadius: '0.5rem',
+                fontWeight: 'bold',
+                fontSize: '1.125rem',
+                border: 'none',
+                color: 'white',
+                cursor: 'pointer',
+                marginBottom: '1rem'
+              }}
+            >
+              Approve &amp; Generate 🎧
+            </button>
+
             <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>{plan.theme || 'Your Mix'}</h2>
             
             {/* Mood Tags */}
@@ -577,24 +682,6 @@ export default function AIPlaylistPage() {
                 ))}
               </div>
             )}
-
-            {/* Approve Button */}
-            <button
-              onClick={handleApprove}
-              style={{ 
-                width: '100%', 
-                padding: '0.75rem', 
-                background: 'linear-gradient(to right, #7C3AED, #EC4899)',
-                borderRadius: '0.5rem',
-                fontWeight: 'bold',
-                fontSize: '1.125rem',
-                border: 'none',
-                color: 'white',
-                cursor: 'pointer'
-              }}
-            >
-              Approve &amp; Generate 🎧
-            </button>
           </div>
         ) : (
           // Empty State

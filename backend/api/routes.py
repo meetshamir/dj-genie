@@ -90,6 +90,22 @@ async def health_check():
                 if file.is_file():
                     cache_size_mb += file.stat().st_size / (1024 ** 2)
     
+    # Check Azure OpenAI availability
+    openai_available = False
+    openai_error = None
+    try:
+        from services.azure_dj_voice import AZURE_OPENAI_AVAILABLE, get_azure_openai_client
+        if AZURE_OPENAI_AVAILABLE:
+            client = get_azure_openai_client()
+            if client:
+                openai_available = True
+            else:
+                openai_error = "Azure OpenAI client not initialized"
+        else:
+            openai_error = "AZURE_OPENAI_ENDPOINT not configured"
+    except Exception as e:
+        openai_error = str(e)
+    
     return HealthResponse(
         status="healthy",
         version=settings.app_version,
@@ -98,7 +114,9 @@ async def health_check():
         gpu_available=False,  # TODO: Implement GPU detection
         gpu_encoder=None,
         disk_space_available_gb=round(disk_space_gb, 2),
-        cache_size_mb=round(cache_size_mb, 2)
+        cache_size_mb=round(cache_size_mb, 2),
+        openai_available=openai_available,
+        openai_error=openai_error
     )
 
 
@@ -982,16 +1000,28 @@ async def export_playlist(
 @router.get("/export/{job_id}")  # Alias for frontend compatibility
 async def get_export_status(job_id: str):
     """Get the status of an export job."""
+    from fastapi.responses import JSONResponse
+    
     if job_id not in export_jobs:
         raise HTTPException(status_code=404, detail={"error": "JOB_NOT_FOUND"})
     
-    return export_jobs[job_id]
+    # Return with cache-busting headers to ensure fresh progress updates
+    return JSONResponse(
+        content=export_jobs[job_id],
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 
 @router.get("/export/jobs/{job_id}/download")
 async def download_export(job_id: str):
     """Download a completed export."""
     from fastapi.responses import FileResponse
+    from starlette.responses import Response
+    import time
     
     if job_id not in export_jobs:
         raise HTTPException(status_code=404, detail={"error": "JOB_NOT_FOUND"})
@@ -1009,11 +1039,24 @@ async def download_export(job_id: str):
     if not output_path.exists():
         raise HTTPException(status_code=404, detail={"error": "FILE_NOT_FOUND"})
     
-    return FileResponse(
+    # Generate unique download filename with timestamp to prevent browser caching
+    timestamp = int(time.time())
+    download_filename = f"dj-mix-{job_id[:8]}-{timestamp}.mp4"
+    
+    # Return file with cache-busting headers
+    response = FileResponse(
         path=str(output_path),
         media_type="video/mp4",
-        filename=output_path.name
+        filename=download_filename,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Job-Id": job_id,
+            "X-Content-Type-Options": "nosniff"
+        }
     )
+    return response
 
 
 # ============== Intelligent Mixing ==============
@@ -1729,7 +1772,7 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
             for i, song_data in enumerate(songs):
                 export_jobs[job_id].update({
                     "status": "searching",
-                    "current_step": f"Finding on YouTube ({i+1}/{total_songs}): {song_data.get('title', 'Unknown')}",
+                    "current_step": f"🔍 Finding on YouTube ({i+1}/{total_songs}): {song_data.get('title', 'Unknown')}",
                     "progress": int((i / total_songs) * 10),  # Search = 0-10%
                     "segment_index": i + 1
                 })
@@ -1753,14 +1796,22 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                 raise Exception("No songs found on YouTube")
             
             # Phase 1: Download songs
+            import time
+            phase_start = time.time()
+            
             export_jobs[job_id].update({
                 "status": "downloading",
-                "current_step": "Downloading songs from YouTube...",
-                "progress": 10
+                "current_step": "⬇️ Starting downloads from YouTube...",
+                "progress": 10,
+                "phase_start": phase_start
             })
             
             downloaded_songs = []
+            download_times = []  # Track per-song download time for ETA
+            
             for i, song_data in enumerate(songs_with_urls):
+                song_start = time.time()
+                
                 # Convert dict to SongRecommendation
                 song_rec = SongRecommendation(
                     title=song_data.get('title', 'Unknown'),
@@ -1774,37 +1825,62 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                     reason=song_data.get('reason', song_data.get('why', ''))
                 )
                 
+                # Calculate ETA based on average download time
+                remaining = len(songs_with_urls) - i
+                avg_time = sum(download_times) / len(download_times) if download_times else 30  # Default 30s per song
+                eta_seconds = int(remaining * avg_time)
+                eta_str = f"~{eta_seconds//60}m {eta_seconds%60}s" if eta_seconds >= 60 else f"~{eta_seconds}s"
+                
                 export_jobs[job_id].update({
-                    "current_step": f"Downloading ({i+1}/{len(songs_with_urls)}): {song_rec.artist} - {song_rec.title}",
+                    "current_step": f"⬇️ Downloading ({i+1}/{len(songs_with_urls)}): {song_rec.title} [{eta_str} remaining]",
                     "progress": 10 + int((i / len(songs_with_urls)) * 25),  # Downloads = 10-35%
-                    "segment_index": i + 1
+                    "segment_index": i + 1,
+                    "eta_seconds": eta_seconds
                 })
                 
                 downloaded = generator.download_song(song_rec, i + 1, len(songs_with_urls))
+                
+                # Record download time for ETA calculation
+                download_times.append(time.time() - song_start)
+                
                 if downloaded:
                     downloaded_songs.append(downloaded)
+                    export_jobs[job_id].update({
+                        "current_step": f"✅ Downloaded ({i+1}/{len(songs_with_urls)}): {song_rec.title}",
+                    })
             
             if not downloaded_songs:
                 raise Exception("No songs could be downloaded")
             
             # Phase 2: Analyze songs (uses YouTube heatmap + audio analysis)
+            analysis_times = []
             export_jobs[job_id].update({
                 "status": "analyzing",
-                "current_step": "Analyzing songs for best segments...",
+                "current_step": "🎵 Analyzing songs for best segments...",
                 "progress": 35
             })
             
             for i, song in enumerate(downloaded_songs):
+                analysis_start = time.time()
+                
+                # Calculate ETA
+                remaining = len(downloaded_songs) - i
+                avg_time = sum(analysis_times) / len(analysis_times) if analysis_times else 5  # Default 5s per song
+                eta_seconds = int(remaining * avg_time)
+                eta_str = f"~{eta_seconds}s" if eta_seconds < 60 else f"~{eta_seconds//60}m {eta_seconds%60}s"
+                
                 export_jobs[job_id].update({
-                    "current_step": f"Analyzing ({i+1}/{len(downloaded_songs)}): {song.original.title}",
-                    "progress": 35 + int((i / len(downloaded_songs)) * 15)  # Analysis = 35-50%
+                    "current_step": f"🎵 Analyzing ({i+1}/{len(downloaded_songs)}): {song.original.title} [{eta_str}]",
+                    "progress": 35 + int((i / len(downloaded_songs)) * 15),  # Analysis = 35-50%
+                    "eta_seconds": eta_seconds
                 })
                 generator.analyze_song(song)
+                analysis_times.append(time.time() - analysis_start)
             
             # Phase 3: Create optimal mix order
             export_jobs[job_id].update({
                 "status": "mixing",
-                "current_step": "Creating optimal mix order...",
+                "current_step": "🎚️ Creating optimal mix order...",
                 "progress": 50
             })
             ordered_songs = generator.create_mix_order(downloaded_songs)
@@ -1812,7 +1888,7 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
             # Phase 4: Export with FFmpeg
             export_jobs[job_id].update({
                 "status": "exporting",
-                "current_step": "Exporting video with crossfades...",
+                "current_step": "🎬 Preparing video segments...",
                 "progress": 55
             })
             
@@ -1836,15 +1912,28 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
             output_path = output_dir / output_filename
             
             # Use the exporter to create the final mix
-            # Create a progress callback for export phase
-            def export_progress(segment_idx: int, total: int, step: str):
+            # Create a progress callback for export phase with time tracking
+            export_times = []
+            export_phase_start = time.time()
+            
+            def export_progress(segment_idx: int, total: int, step: str, segment_time: float = None):
+                if segment_time:
+                    export_times.append(segment_time)
+                
+                # Calculate ETA
+                remaining = total - segment_idx
+                avg_time = sum(export_times) / len(export_times) if export_times else 15  # Default 15s per segment
+                eta_seconds = int(remaining * avg_time)
+                eta_str = f"~{eta_seconds//60}m {eta_seconds%60}s" if eta_seconds >= 60 else f"~{eta_seconds}s"
+                
                 base_progress = 55
-                export_range = 40  # 55% to 95%
+                export_range = 30  # 55% to 85%
                 segment_progress = (segment_idx / total) * export_range
                 export_jobs[job_id].update({
-                    "current_step": f"Exporting: {step}",
+                    "current_step": f"🎬 {step} ({segment_idx}/{total}) [{eta_str}]",
                     "progress": int(base_progress + segment_progress),
-                    "segment_index": segment_idx
+                    "segment_index": segment_idx,
+                    "eta_seconds": eta_seconds
                 })
             
             # Use create_transition_concat for smooth crossfades and visible transitions
@@ -1853,6 +1942,7 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
             # First extract all segments with overlays
             temp_segments = []
             for i, seg in enumerate(segments_for_export):
+                segment_start = time.time()
                 export_progress(i + 1, len(segments_for_export), f"Processing {seg['title']}")
                 
                 temp_path = output_dir / f"temp_seg_{job_id[:8]}_{i}.mp4"
@@ -1867,13 +1957,15 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                 )
                 if success and temp_path.exists():
                     temp_segments.append(temp_path)
+                    # Update with actual time taken
+                    export_progress(i + 1, len(segments_for_export), f"✅ {seg['title']}", time.time() - segment_start)
             
             if not temp_segments:
                 raise Exception("Failed to process any segments")
             
             # Concatenate all segments with crossfade transitions
             export_jobs[job_id].update({
-                "current_step": "Creating crossfade transitions...",
+                "current_step": "✨ Creating crossfade transitions...",
                 "progress": 85
             })
             
@@ -1898,13 +1990,20 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
             
             # Add AI DJ Voice Commentary
             export_jobs[job_id].update({
-                "current_step": "Adding AI DJ voice commentary...",
-                "progress": 92
+                "current_step": "🎤 Preparing AI DJ voice...",
+                "progress": 90
             })
             
             try:
                 from services.azure_dj_voice import add_creative_dj_commentary_to_video, DJContext
                 import tempfile
+                
+                # Progress callback for detailed DJ status updates
+                def dj_progress_callback(step: str, detail: str = ""):
+                    export_jobs[job_id].update({
+                        "current_step": f"🎤 {step}" + (f" - {detail}" if detail else ""),
+                        "dj_detail": detail
+                    })
                 
                 # Build segment info for DJ timing
                 segment_info = []
@@ -1947,7 +2046,8 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                     output_path=dj_output,
                     context=dj_context,
                     voice="energetic_male",
-                    frequency="frequent"  # More commentary for better party vibe!
+                    frequency="frequent",  # More commentary for better party vibe!
+                    progress_callback=dj_progress_callback
                 )
                 
                 if dj_success and dj_output.exists():
@@ -1997,7 +2097,7 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
             export_jobs[job_id].update({
                 "status": "complete",
                 "progress": 100,
-                "current_step": "Export complete!",
+                "current_step": "✅ Mix complete! Ready to download",
                 "output_path": str(output_path),
                 "result": {
                     "success": True,
