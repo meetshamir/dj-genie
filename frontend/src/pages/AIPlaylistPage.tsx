@@ -21,6 +21,18 @@ interface PlaylistPlan {
   songs?: Song[];
   commentary_samples?: string[];
   shoutouts?: string[];
+  party_people?: string[];
+  cultural_phrases?: Record<string, string[]>;
+}
+
+interface TimelineEntry {
+  time: string;
+  type: 'song' | 'dj_comment';
+  title?: string;
+  artist?: string;
+  language?: string;
+  text?: string;
+  comment_type?: string;
 }
 
 interface ExportProgress {
@@ -34,6 +46,17 @@ interface ExportProgress {
   error?: string;
   result?: {
     output_path?: string;
+    song_timeline?: Array<{
+      start_time: number;
+      title: string;
+      artist: string;
+      language: string;
+    }>;
+    dj_timeline?: Array<{
+      start_time: number;
+      text: string;
+      type: string;
+    }>;
   };
 }
 
@@ -47,6 +70,7 @@ export default function AIPlaylistPage() {
   const [shoutouts, setShoutouts] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const [mixTimeline, setMixTimeline] = useState<TimelineEntry[]>([]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -68,7 +92,67 @@ export default function AIPlaylistPage() {
       const data = JSON.parse(event.data);
       setExportProgress(data);
       
-      if (data.status === 'complete' || data.status === 'failed') {
+      if (data.status === 'complete' && data.result) {
+        // Build combined timeline from songs and DJ comments
+        const timeline: TimelineEntry[] = [];
+        
+        // Add songs to timeline
+        if (data.result.song_timeline) {
+          for (const song of data.result.song_timeline) {
+            const mins = Math.floor(song.start_time / 60);
+            const secs = Math.floor(song.start_time % 60);
+            timeline.push({
+              time: `${mins}:${secs.toString().padStart(2, '0')}`,
+              type: 'song',
+              title: song.title,
+              artist: song.artist,
+              language: song.language
+            });
+          }
+        }
+        
+        // Add DJ comments to timeline
+        if (data.result.dj_timeline) {
+          for (const comment of data.result.dj_timeline) {
+            const mins = Math.floor(comment.start_time / 60);
+            const secs = Math.floor(comment.start_time % 60);
+            timeline.push({
+              time: `${mins}:${secs.toString().padStart(2, '0')}`,
+              type: 'dj_comment',
+              text: comment.text,
+              comment_type: comment.type
+            });
+          }
+        }
+        
+        // Sort by time
+        timeline.sort((a, b) => {
+          const [aMins, aSecs] = a.time.split(':').map(Number);
+          const [bMins, bSecs] = b.time.split(':').map(Number);
+          return (aMins * 60 + aSecs) - (bMins * 60 + bSecs);
+        });
+        
+        setMixTimeline(timeline);
+        
+        // Add timeline message to chat
+        if (timeline.length > 0) {
+          let timelineText = '\n\n📋 **Mix Timeline:**\n';
+          for (const entry of timeline) {
+            if (entry.type === 'song') {
+              timelineText += `\n⏱️ ${entry.time} - 🎵 **${entry.title}** by ${entry.artist}`;
+            } else {
+              const emoji = entry.comment_type === 'intro' ? '🎬' :
+                           entry.comment_type === 'outro' ? '🎤' :
+                           entry.comment_type === 'shoutout' ? '🙌' :
+                           entry.comment_type === 'cultural' ? '🌍' : '🗣️';
+              timelineText += `\n⏱️ ${entry.time} - ${emoji} "${entry.text}"`;
+            }
+          }
+          setMessages(prev => [...prev, { role: 'assistant', content: '✅ **Your mix is ready!**' + timelineText + '\n\n⬇️ Download your mix from the panel on the right!' }]);
+        }
+        
+        ws.close();
+      } else if (data.status === 'failed') {
         ws.close();
       }
     };
@@ -461,6 +545,38 @@ export default function AIPlaylistPage() {
                 </div>
               )}
             </div>
+
+            {/* Party People */}
+            {plan.party_people && plan.party_people.length > 0 && (
+              <div style={{ marginBottom: '1rem' }}>
+                <h3 style={{ fontWeight: '600', color: '#D1D5DB', marginBottom: '0.5rem' }}>🙌 Party People</h3>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {plan.party_people.map((name, i) => (
+                    <span key={i} style={{ 
+                      padding: '0.25rem 0.5rem', 
+                      backgroundColor: 'rgba(236, 72, 153, 0.5)', 
+                      borderRadius: '9999px', 
+                      fontSize: '0.875rem' 
+                    }}>
+                      {name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Cultural Phrases */}
+            {plan.cultural_phrases && Object.keys(plan.cultural_phrases).length > 0 && (
+              <div style={{ marginBottom: '1rem' }}>
+                <h3 style={{ fontWeight: '600', color: '#D1D5DB', marginBottom: '0.5rem' }}>🌍 Cultural Vibes</h3>
+                {Object.entries(plan.cultural_phrases).map(([lang, phrases]) => (
+                  <div key={lang} style={{ marginBottom: '0.5rem' }}>
+                    <p style={{ fontSize: '0.75rem', color: '#A78BFA', textTransform: 'capitalize' }}>{lang}</p>
+                    <p style={{ fontSize: '0.875rem', color: '#9CA3AF' }}>{phrases.join(' • ')}</p>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Approve Button */}
             <button

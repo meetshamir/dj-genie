@@ -1506,16 +1506,26 @@ IMPORTANT: If the user mentions friends/people to call out, ALWAYS include them 
 
 When you have enough info to create a plan, output JSON like this:
 ```json
-{"ready": true, "theme": "Party Theme", "mood": ["energetic"], "languages": ["English"], 
-"duration_minutes": 30, "songs": [{"title": "Song", "artist": "Artist", "why": "reason"}],
+{"ready": true, "theme": "Party Theme", "mood": ["energetic"], "languages": ["English", "Hindi", "Tamil"], 
+"duration_minutes": 30, "songs": [{"title": "Song", "artist": "Artist", "language": "Hindi", "why": "reason"}],
 "party_people": ["Friend1", "Friend2", "Friend3"],
+"cultural_phrases": {
+  "hindi": ["Arey waah!", "Jhakaas!", "Ekdum mast!"],
+  "tamil": ["Mass!", "Theri!", "Vera level!"],
+  "malayalam": ["Adipoli!", "Pwoli!", "Kidu!"],
+  "punjabi": ["Balle balle!", "Oye hoye!", "Paaji!"],
+  "arabic": ["Yalla habibi!", "Khalas!"],
+  "turkish": ["Harika!", "Süper!"],
+  "english": ["Let's go!", "Fire!", "Vibes!"]
+},
 "commentary_samples": ["Welcome!"], "shoutouts": ["Happy New Year!"]}
 ```
 
-"party_people" should contain INDIVIDUAL NAMES of friends the user wants called out by the DJ.
-"shoutouts" should contain generic party phrases.
+"party_people" = INDIVIDUAL NAMES of friends the user wants called out by the DJ.
+"cultural_phrases" = 2-4 word cultural slang phrases for EACH language in the playlist.
+"shoutouts" = generic party phrases.
 
-Be conversational, fun, and enthusiastic like a real DJ! Use emojis."""
+Include ONLY the languages that appear in the songs. Be conversational, fun, and enthusiastic like a real DJ! Use emojis."""
 
             if AZURE_OPENAI_AVAILABLE:
                 try:
@@ -1945,13 +1955,19 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                     import shutil
                     shutil.move(str(dj_output), str(output_path))
                     print(f"[AI_EXPORT] DJ voice added successfully!", flush=True)
+                    
+                    # Store DJ timeline for UI display
+                    export_jobs[job_id]["dj_timeline"] = dj_timeline
+                    export_jobs[job_id]["segment_info"] = segment_info
                 else:
                     print(f"[AI_EXPORT] DJ voice failed, keeping original video", flush=True)
+                    dj_timeline = []
                     
             except Exception as dj_error:
                 print(f"[AI_EXPORT] DJ voice error (continuing without DJ): {dj_error}", flush=True)
                 import traceback
                 traceback.print_exc()
+                dj_timeline = []
             
             # Get file size
             file_size = output_path.stat().st_size
@@ -1962,7 +1978,22 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                 for seg in segments_for_export
             )
             
-            # Mark complete with real results
+            # Build song timeline for UI
+            song_timeline = []
+            cumulative = 4.0  # Intro duration
+            for seg in segments_for_export:
+                seg_dur = seg['end'] - seg['start']
+                song_timeline.append({
+                    "title": seg['title'],
+                    "artist": seg['artist'],
+                    "language": seg.get('language', 'English'),
+                    "start_time": cumulative,
+                    "end_time": cumulative + seg_dur,
+                    "duration": seg_dur
+                })
+                cumulative += seg_dur - 3.5  # Subtract transition overlap
+            
+            # Mark complete with real results including timeline
             export_jobs[job_id].update({
                 "status": "complete",
                 "progress": 100,
@@ -1973,7 +2004,9 @@ async def approve_ai_plan(request: AIApproveRequest, background_tasks: Backgroun
                     "output_path": str(output_path),
                     "duration_seconds": total_duration,
                     "file_size_bytes": file_size,
-                    "songs_processed": len(ordered_songs)
+                    "songs_processed": len(ordered_songs),
+                    "song_timeline": song_timeline,
+                    "dj_timeline": export_jobs[job_id].get("dj_timeline", [])
                 }
             })
             
