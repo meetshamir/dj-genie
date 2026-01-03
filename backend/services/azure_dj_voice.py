@@ -277,86 +277,78 @@ def generate_creative_commentary_with_gpt(
     # Calculate comment distribution based on number of songs
     num_songs = len(segments)
     
-    # Distribution strategy:
+    # Distribution strategy - MORE FREQUENT for better coverage:
     # - 1 intro (theme-based)
     # - 1 outro (theme-based) 
-    # - ~40% of songs get a "next up" callout
-    # - ~40% of songs get a personal shoutout (increased from 30%)
-    # - At least 1 cultural phrase per unique language, or 50% of songs
-    num_next_up = max(1, int(num_songs * 0.4))
-    num_shoutouts = max(2, int(num_songs * 0.4)) if shoutout_names else 0
-    num_cultural = max(len(unique_languages), int(num_songs * 0.5))  # At least one per language
+    # - Every song gets a "next up" callout (except first)
+    # - At least 1 shoutout per song if we have names
+    # - Every song gets a cultural phrase  
+    # - Every song gets a "hype" at 75% in to fill gaps
+    num_next_up = max(1, num_songs - 1)  # All songs except first get next_up
+    num_shoutouts = min(len(shoutout_names), num_songs) if shoutout_names else 0  # One per name, max one per song
+    num_cultural = num_songs  # Every song gets a cultural callout
+    num_hype = num_songs  # Every song gets a hype callout at 75% in
     
-    total_comments = 2 + num_next_up + num_shoutouts + num_cultural  # intro + outro + rest
-    # Allow more comments - cap at 2x songs to give room for variety
-    total_comments = min(total_comments, num_songs * 2)
+    total_comments = 2 + num_next_up + num_shoutouts + num_cultural + num_hype  # intro + outro + rest
+    # Cap at 4x songs to allow for all the comments
+    total_comments = min(total_comments, num_songs * 4)
     
-    log(f"[AZURE_DJ] Comment distribution: intro=1, next_up={num_next_up}, shoutouts={num_shoutouts}, cultural={num_cultural}, outro=1, total={total_comments}")
+    log(f"[AZURE_DJ] Comment distribution: intro=1, next_up={num_next_up}, shoutouts={num_shoutouts}, cultural={num_cultural}, hype={num_hype}, outro=1, total={total_comments}")
     
-    prompt = f"""You are an energetic AI DJ at a party! Generate EXACTLY {total_comments} DJ voice-over comments.
+    # Build explicit segment assignment for each song to ensure coverage
+    song_assignments = []
+    for i in range(num_songs):
+        song_num = i + 1
+        song_title = segments[i].get('song_title', f'Song {song_num}')[:30]
+        lang = segments[i].get('language', 'english')
+        assignments = []
+        if i == 0:
+            assignments.append("intro")
+        if i > 0:
+            assignments.append("next_up")
+        assignments.append("cultural @30%")
+        if shoutout_names and i < len(shoutout_names):
+            assignments.append(f"shoutout @50% for {shoutout_names[i]}")
+        assignments.append("hype @75%")  # Every song gets hype at 75%
+        if i == num_songs - 1:
+            assignments.append("outro")
+        song_assignments.append(f"  Song {song_num} ({song_title}, {lang}): {', '.join(assignments)}")
+    
+    assignment_text = "\\n".join(song_assignments)
+    
+    prompt = f"""Generate EXACTLY {total_comments} DJ voice-over comments as a JSON array.
 
-=== PARTY INFO ===
-THEME: {context.theme}
+PARTY: {context.theme}
 MOOD: {mood_str}
-PEOPLE AT THE PARTY: {shoutout_list}
-{f"SPECIAL NOTES: {context.special_notes}" if context.special_notes else ""}
+PEOPLE: {shoutout_list}
+{f"NOTES: {context.special_notes}" if context.special_notes else ""}
 
-=== PLAYLIST ({num_songs} songs) ===
+PLAYLIST:
 {songs_list}
 
-=== COMMENT TYPES (use these EXACT types) ===
+REQUIRED DISTRIBUTION:
+{assignment_text}
 
-1. **intro** (1 comment) - Theme-based party opener
-   - Reference the theme: "{context.theme}"
-   - 8-12 words max
-   - Example: "Happy New Year everyone! 2026 here we come, let's party!"
+COMMENT TYPES:
+- intro: Theme opener (8-12 words), segment_index=0
+- next_up: "Next up, [artist]!" (5-8 words), before each song
+- cultural: Culture phrase (2-4 words): "Jhakaas!" (Hindi), "Vera level!" (Tamil), "Let's go!" (English)
+- shoutout: Personal callout (5-10 words): "[Name], you rock!"  
+- hype: Energy booster (3-6 words): "Keep it going!", "Feel the energy!"
+- outro: Theme closing (8-12 words), segment_index={num_songs - 1}
 
-2. **next_up** ({num_next_up} comments) - Quick song/artist callout BEFORE the song
-   - MUST be 5-8 words only!
-   - Just announce what's coming, nothing else
-   - Examples: "Next up, MJ!", "Here comes Badshah!", "AR Rahman time, let's go!"
-
-3. **shoutout** ({num_shoutouts} comments) - Personal callout to party people DURING a song
-   - MUST include a name from: {shoutout_list}
-   - 5-10 words max
-   - Examples: "Muskaan, you're on fire!", "Karim, break a leg!", "Yo Shamir, this is your jam!"
-
-4. **cultural** ({num_cultural} comments) - Cultural slang phrases DURING a song
-   - MUST be 2-4 words ONLY! Super short!
-   - Match the song's language/culture:
-     * Hindi: "Arey waah!", "Jhakaas!", "Ekdum mast!"
-     * Tamil: "Mass!", "Theri!", "Vera level!"
-     * Malayalam: "Adipoli!", "Pwoli!", "Kidu!"
-     * Punjabi: "Balle balle!", "Oye hoye!", "Paaji rocks!"
-     * Arabic: "Yalla habibi!", "Khalas!"
-     * Turkish: "Harika!", "Süper!"
-     * English: "Let's go!", "Fire!", "Vibes!"
-
-5. **outro** (1 comment) - Theme-based closing
-   - Reference the theme again
-   - 8-12 words max
-   - Example: "What a night! Happy 2026 everyone, stay blessed!"
-
-=== RULES ===
-1. segment_index 0 = first song, 1 = second, etc.
-2. "intro" MUST have segment_index: 0
-3. "outro" MUST have segment_index: {num_songs - 1}
-4. "next_up" goes BEFORE a song starts (segment_index = that song's index)
-5. "shoutout" and "cultural" go DURING a song (segment_index = that song's index)
-6. DISTRIBUTE evenly - don't cluster all comments at the start!
-7. Use DIFFERENT names for each shoutout - spread the love!
-
-=== OUTPUT FORMAT (JSON array) ===
+OUTPUT FORMAT - Return ONLY this JSON array with {total_comments} objects:
 [
-  {{"type": "intro", "text": "Theme intro here", "segment_index": 0}},
-  {{"type": "next_up", "text": "Next up, [artist]!", "segment_index": 2}},
-  {{"type": "shoutout", "text": "[Name], you rock!", "segment_index": 3}},
-  {{"type": "cultural", "text": "Adipoli!", "segment_index": 5}},
-  {{"type": "next_up", "text": "Here comes MJ!", "segment_index": 6}},
-  {{"type": "outro", "text": "Theme outro here", "segment_index": {num_songs - 1}}}
+  {{"type": "intro", "text": "Your intro text here", "segment_index": 0}},
+  {{"type": "cultural", "text": "Jhakaas!", "segment_index": 0}},
+  {{"type": "shoutout", "text": "Karim, you rock!", "segment_index": 0}},
+  {{"type": "hype", "text": "Keep it going!", "segment_index": 0}},
+  {{"type": "next_up", "text": "Next up, MJ!", "segment_index": 1}},
+  ... more comments ...
+  {{"type": "outro", "text": "Your outro text here", "segment_index": {num_songs - 1}}}
 ]
 
-Generate EXACTLY {total_comments} comments now (1 intro + {num_next_up} next_up + {num_shoutouts} shoutout + {num_cultural} cultural + 1 outro):"""
+Generate the JSON array now:"""
 
     try:
         log(f"[AZURE_DJ] Generating {total_comments} creative comments with GPT...")
@@ -364,11 +356,11 @@ Generate EXACTLY {total_comments} comments now (1 intro + {num_next_up} next_up 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": "You are an energetic party DJ. Output only valid JSON arrays."},
+                {"role": "system", "content": "You are an energetic party DJ. Output ONLY a valid JSON array of objects. Each object must have 'type', 'text', and 'segment_index' keys. No other text."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.9,  # High creativity
-            max_tokens=1500
+            temperature=0.8,  # Slightly lower for more consistent format
+            max_tokens=2000  # More tokens for longer lists
         )
         
         content = response.choices[0].message.content.strip()
@@ -383,8 +375,15 @@ Generate EXACTLY {total_comments} comments now (1 intro + {num_next_up} next_up 
         
         comments_data = json.loads(content)
         
+        # Debug: log raw parsed data type
+        log(f"[AZURE_DJ] Parsed JSON type: {type(comments_data)}, len: {len(comments_data) if isinstance(comments_data, list) else 'N/A'}")
+        
         comments = []
-        for item in comments_data:
+        for i, item in enumerate(comments_data):
+            # Debug: log each item type
+            if not isinstance(item, dict):
+                log(f"[AZURE_DJ] WARNING: Item {i} is {type(item).__name__}: {str(item)[:100]}")
+                continue
             comment = CreativeDJComment(
                 text=item.get("text", ""),
                 comment_type=item.get("type", "hype"),
@@ -852,12 +851,12 @@ def add_creative_dj_commentary_to_video(
                 else:
                     start_time = last_clip_end_time + 5.0
             elif comment.comment_type == "hype" or comment.comment_type == "peak_energy":
-                # Hype/peak energy comments go in the MIDDLE of the song
+                # Hype/peak energy comments go LATE in the song (75% in)
                 if seg_idx < len(segment_timings):
                     song_start = segment_timings[seg_idx]['start']
                     song_duration = segment_timings[seg_idx]['duration']
-                    # Place at 40% into the song
-                    start_time = song_start + (song_duration * 0.4)
+                    # Place at 75% into the song (fills gap before next song)
+                    start_time = song_start + (song_duration * 0.75)
                 else:
                     start_time = last_clip_end_time + 8.0
             else:
